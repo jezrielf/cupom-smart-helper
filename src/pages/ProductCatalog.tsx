@@ -189,6 +189,23 @@ export default function ProductCatalog() {
     }
   };
 
+  const handleRefreshAll = async () => {
+    const uniqueNames = [...new Set(filtered.map((p) => p.product_name_normalized))];
+    if (uniqueNames.length === 0) return;
+    setBulkProgress({ current: 0, total: uniqueNames.length, currentProduct: uniqueNames[0] });
+    let successCount = 0;
+    for (let i = 0; i < uniqueNames.length; i++) {
+      setBulkProgress({ current: i, total: uniqueNames.length, currentProduct: uniqueNames[i] });
+      try {
+        await handleRefreshOnlinePrice(uniqueNames[i]);
+        successCount++;
+      } catch {}
+      if (i < uniqueNames.length - 1) await new Promise((r) => setTimeout(r, 1500));
+    }
+    setBulkProgress(null);
+    toast.success(`${successCount} de ${uniqueNames.length} preços atualizados`);
+  };
+
   const getCatalogEntry = (normalizedName: string) => catalog?.find((c) => c.canonical_name === normalizedName);
   const getFrequency = (normalizedName: string): string => {
     const entry = getCatalogEntry(normalizedName);
