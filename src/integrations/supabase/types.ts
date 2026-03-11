@@ -473,6 +473,25 @@ export type Database = {
       }
     }
     Functions: {
+      get_price_comparison: {
+        Args: { search_term?: string }
+        Returns: {
+          avg_price: number
+          avg_price_30d: number
+          avg_price_90d: number
+          brand_color: string
+          last_price: number
+          last_purchase_date: string
+          logo_url: string
+          max_price: number
+          min_price: number
+          product_code: string
+          product_name_normalized: string
+          supermarket_id: string
+          supermarket_name: string
+          times_purchased: number
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
