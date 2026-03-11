@@ -14,6 +14,7 @@ import { FileText, ScanLine, Trash2, CreditCard } from "lucide-react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
 import { toast } from "sonner";
+import { formatProductDetail } from "@/lib/formatUnit";
 
 const formatBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 

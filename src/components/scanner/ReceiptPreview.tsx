@@ -1,4 +1,5 @@
 import { format } from "date-fns";
+import { formatProductDetail } from "@/lib/formatUnit";
 import { ptBR } from "date-fns/locale";
 import { ShoppingCart, Store, Calendar, Receipt } from "lucide-react";
 import { Button } from "@/components/ui/button";
