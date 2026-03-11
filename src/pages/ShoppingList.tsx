@@ -381,6 +381,7 @@ export default function ShoppingList() {
                   </div>
                 )}
 
+                {items?.map((item) => {
                   const cat = getItemCatalog(item.product_name);
                   const hasFreq = cat && cat.purchase_frequency_days;
                   const nextDate = hasFreq ? getNextPurchaseDate(cat.last_purchased_at, cat.purchase_frequency_days!) : null;
