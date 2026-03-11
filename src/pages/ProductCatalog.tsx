@@ -75,6 +75,7 @@ export default function ProductCatalog() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [refreshingProducts, setRefreshingProducts] = useState<Set<string>>(new Set());
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; currentProduct: string } | null>(null);
 
   const { data: products, isLoading } = useQuery({
     queryKey: ["user-products", user?.id],
