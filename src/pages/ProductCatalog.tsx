@@ -273,52 +273,6 @@ export default function ProductCatalog() {
     }
   };
 
-  const handleRefreshIfoodPrice = async (normalizedName: string) => {
-    setRefreshingIfood((prev) => new Set(prev).add(normalizedName));
-    try {
-      const { data, error } = await supabase.functions.invoke("search-ifood", {
-        body: { product_name: normalizedName },
-      });
-
-      if (error || !data?.success) return;
-
-      if (!data.results?.length) {
-        toast.info(`Nenhum resultado no iFood para "${normalizedName}"`);
-        return;
-      }
-
-      const cheapest = data.results.reduce((min: any, r: any) => (r.price < min.price ? r : min), data.results[0]);
-
-      const { data: existing } = await supabase
-        .from("product_catalog")
-        .select("id")
-        .eq("canonical_name", normalizedName)
-        .maybeSingle();
-
-      const ifoodData = {
-        ifood_price: cheapest.price,
-        ifood_url: cheapest.url || data.search_url,
-        ifood_updated_at: new Date().toISOString(),
-      };
-
-      if (existing) {
-        await supabase.from("product_catalog").update(ifoodData).eq("id", existing.id);
-      } else {
-        await supabase.from("product_catalog").insert({ canonical_name: normalizedName, ...ifoodData });
-      }
-
-      qc.invalidateQueries({ queryKey: ["product-catalog-freq"] });
-    } catch {
-      toast.error("Erro ao buscar preço iFood");
-    } finally {
-      setRefreshingIfood((prev) => {
-        const next = new Set(prev);
-        next.delete(normalizedName);
-        return next;
-      });
-    }
-  };
-
   const handleRefreshAll = async () => {
     const uniqueNames = [...new Set(filtered.map((p) => p.product_name_normalized))];
     if (uniqueNames.length === 0) return;
@@ -330,8 +284,6 @@ export default function ProductCatalog() {
         await handleRefreshOnlinePrice(uniqueNames[i]);
         await new Promise((r) => setTimeout(r, 1000));
         await handleRefreshMLPrice(uniqueNames[i]);
-        await new Promise((r) => setTimeout(r, 1000));
-        await handleRefreshIfoodPrice(uniqueNames[i]);
         successCount++;
       } catch {}
       if (i < uniqueNames.length - 1) await new Promise((r) => setTimeout(r, 1500));
