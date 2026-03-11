@@ -257,12 +257,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Fetch the NFC-e page — try Firecrawl first, fallback to native fetch
-    let html = "";
+    // Try Firecrawl JSON extraction first (AI-powered structured extraction)
     const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
+    let parsed: ReturnType<typeof parseNfceHtml> | null = null;
+    let html = "";
 
     if (firecrawlApiKey) {
-      console.log("Using Firecrawl to scrape:", url);
+      console.log("Using Firecrawl JSON extraction for:", url);
       try {
         const fcResponse = await fetch("https://api.firecrawl.dev/v1/scrape", {
           method: "POST",
@@ -272,52 +273,146 @@ Deno.serve(async (req) => {
           },
           body: JSON.stringify({
             url,
-            formats: ["html"],
+            formats: ["extract"],
+            extract: {
+              schema: {
+                type: "object",
+                properties: {
+                  emitter_name: { type: "string" },
+                  emitter_cnpj: { type: "string" },
+                  emitter_address: { type: "string" },
+                  purchase_date: { type: "string" },
+                  access_key: { type: "string" },
+                  products: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        code: { type: "string" },
+                        name: { type: "string" },
+                        quantity: { type: "number" },
+                        unit: { type: "string" },
+                        unit_price: { type: "number" },
+                        total_price: { type: "number" },
+                      },
+                    },
+                  },
+                  total_amount: { type: "number" },
+                  total_discount: { type: "number" },
+                  payment_method: { type: "string" },
+                },
+              },
+              prompt: "Extraia os dados desta nota fiscal eletrônica (NFC-e) brasileira. Inclua TODOS os produtos listados com nome, código, quantidade, unidade (UN, KG, etc), preço unitário e preço total. O CNPJ deve conter apenas dígitos (sem pontos, barras ou hífens). A data de compra deve estar no formato DD/MM/AAAA HH:MM:SS. A chave de acesso tem 44 dígitos numéricos.",
+            },
             waitFor: 3000,
           }),
         });
 
         if (fcResponse.ok) {
           const fcData = await fcResponse.json();
-          html = fcData.data?.html || fcData.html || "";
-          console.log("Firecrawl scrape successful, HTML length:", html.length);
+          const extracted = fcData.data?.extract || fcData.extract;
+          console.log("Firecrawl extraction result:", JSON.stringify(extracted));
+
+          if (extracted && extracted.products && extracted.products.length > 0) {
+            // Parse the date from extracted data
+            let purchaseDate = new Date().toISOString();
+            if (extracted.purchase_date) {
+              const parts = extracted.purchase_date.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):?(\d{2})?/);
+              if (parts) {
+                purchaseDate = new Date(
+                  parseInt(parts[3]), parseInt(parts[2]) - 1, parseInt(parts[1]),
+                  parseInt(parts[4]), parseInt(parts[5]), parseInt(parts[6] || "0")
+                ).toISOString();
+              }
+            }
+
+            const products = extracted.products.map((p: any) => ({
+              product_code: p.code || "",
+              product_name: p.name || "",
+              product_name_normalized: normalize(p.name || ""),
+              quantity: p.quantity || 1,
+              unit: p.unit || "UN",
+              unit_price: p.unit_price || 0,
+              total_price: p.total_price || (p.quantity || 1) * (p.unit_price || 0),
+            }));
+
+            parsed = {
+              access_key: (extracted.access_key || "").replace(/\D/g, ""),
+              emitter: {
+                name: extracted.emitter_name || "",
+                cnpj: (extracted.emitter_cnpj || "").replace(/\D/g, ""),
+                address: extracted.emitter_address || "",
+              },
+              purchase_date: purchaseDate,
+              products,
+              total_amount: extracted.total_amount || products.reduce((s: number, p: any) => s + p.total_price, 0),
+              total_discount: extracted.total_discount || 0,
+              payment_method: extracted.payment_method || "",
+              item_count: products.length,
+            };
+            console.log("Firecrawl JSON extraction successful:", parsed.item_count, "products");
+          } else {
+            console.warn("Firecrawl extraction returned no products, falling back to HTML parsing");
+          }
         } else {
-          console.warn("Firecrawl failed with status:", fcResponse.status, "- falling back to native fetch");
+          console.warn("Firecrawl failed with status:", fcResponse.status);
         }
       } catch (fcError) {
-        console.warn("Firecrawl error:", fcError, "- falling back to native fetch");
+        console.warn("Firecrawl error:", fcError);
       }
     }
 
-    // Fallback: native fetch
-    if (!html) {
-      console.log("Using native fetch for:", url);
-      const response = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
-          "Accept": "text/html,application/xhtml+xml",
-        },
-        redirect: "follow",
-      });
+    // Fallback: HTML parsing (Firecrawl HTML or native fetch)
+    if (!parsed) {
+      // Try getting HTML from Firecrawl
+      if (firecrawlApiKey && !html) {
+        try {
+          const fcHtmlResponse = await fetch("https://api.firecrawl.dev/v1/scrape", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${firecrawlApiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ url, formats: ["html"], waitFor: 3000 }),
+          });
+          if (fcHtmlResponse.ok) {
+            const fcHtmlData = await fcHtmlResponse.json();
+            html = fcHtmlData.data?.html || fcHtmlData.html || "";
+          }
+        } catch (e) {
+          console.warn("Firecrawl HTML fallback error:", e);
+        }
+      }
 
-      if (!response.ok) {
-        if (response.status === 404) {
+      // Native fetch fallback
+      if (!html) {
+        console.log("Using native fetch for:", url);
+        const response = await fetch(url, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+          },
+          redirect: "follow",
+        });
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            return new Response(
+              JSON.stringify({ error: "Cupom fiscal não encontrado" }),
+              { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
           return new Response(
-            JSON.stringify({ error: "Cupom fiscal não encontrado" }),
-            { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            JSON.stringify({ error: `Erro ao acessar o portal: ${response.status}` }),
+            { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-        return new Response(
-          JSON.stringify({ error: `Erro ao acessar o portal: ${response.status}` }),
-          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+
+        html = await response.text();
       }
 
-      html = await response.text();
+      parsed = parseNfceHtml(html);
     }
-
-    // Parse the HTML
-    const parsed = parseNfceHtml(html);
 
     if (!parsed.access_key && accessKey) {
       parsed.access_key = accessKey.replace(/\s/g, "");
@@ -330,7 +425,7 @@ Deno.serve(async (req) => {
     }
 
     return new Response(
-      JSON.stringify({ ...parsed, qr_code_url: url, raw_html: html }),
+      JSON.stringify({ ...parsed, qr_code_url: url }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
