@@ -257,29 +257,64 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Fetch the NFC-e page
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml",
-      },
-      redirect: "follow",
-    });
+    // Fetch the NFC-e page — try Firecrawl first, fallback to native fetch
+    let html = "";
+    const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
 
-    if (!response.ok) {
-      if (response.status === 404) {
-        return new Response(
-          JSON.stringify({ error: "Cupom fiscal não encontrado" }),
-          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+    if (firecrawlApiKey) {
+      console.log("Using Firecrawl to scrape:", url);
+      try {
+        const fcResponse = await fetch("https://api.firecrawl.dev/v1/scrape", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${firecrawlApiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            url,
+            formats: ["html"],
+            waitFor: 3000,
+          }),
+        });
+
+        if (fcResponse.ok) {
+          const fcData = await fcResponse.json();
+          html = fcData.data?.html || fcData.html || "";
+          console.log("Firecrawl scrape successful, HTML length:", html.length);
+        } else {
+          console.warn("Firecrawl failed with status:", fcResponse.status, "- falling back to native fetch");
+        }
+      } catch (fcError) {
+        console.warn("Firecrawl error:", fcError, "- falling back to native fetch");
       }
-      return new Response(
-        JSON.stringify({ error: `Erro ao acessar o portal: ${response.status}` }),
-        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
     }
 
-    const html = await response.text();
+    // Fallback: native fetch
+    if (!html) {
+      console.log("Using native fetch for:", url);
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml",
+        },
+        redirect: "follow",
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          return new Response(
+            JSON.stringify({ error: "Cupom fiscal não encontrado" }),
+            { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        return new Response(
+          JSON.stringify({ error: `Erro ao acessar o portal: ${response.status}` }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      html = await response.text();
+    }
 
     // Parse the HTML
     const parsed = parseNfceHtml(html);
