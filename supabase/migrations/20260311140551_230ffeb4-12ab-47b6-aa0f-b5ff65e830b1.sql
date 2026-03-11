@@ -1,0 +1,1 @@
+ALTER TABLE public.shopping_lists ADD COLUMN frequency_days integer;
