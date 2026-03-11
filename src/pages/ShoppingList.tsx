@@ -17,7 +17,7 @@ import { toast } from "sonner";
 const formatBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const PRIORITY_COLORS: Record<string, string> = { high: "bg-destructive/20 text-destructive", medium: "bg-warning/20 text-warning", low: "bg-muted text-muted-foreground" };
 const PRIORITY_LABELS: Record<string, string> = { high: "Alta", medium: "Média", low: "Baixa" };
-const FREQ_LABELS: Record<number, string> = { 7: "Semanal", 15: "Quinzenal", 30: "Mensal" };
+const FREQ_LABELS: Record<number, string> = { 7: "Semanal", 15: "Quinzenal", 30: "Mensal", 60: "Bimestral", 90: "Trimestral" };
 
 function getNextPurchaseDate(lastPurchased: string | null, freqDays: number): Date {
   if (!lastPurchased) return new Date();
