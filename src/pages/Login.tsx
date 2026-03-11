@@ -11,6 +11,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { Navigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Mail, Lock, User } from "lucide-react";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 export default function Login() {
   const { user, loading } = useAuth();
