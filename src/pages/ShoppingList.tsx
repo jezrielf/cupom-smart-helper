@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -11,12 +11,39 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ShoppingCart, Plus, Trash2, Sparkles } from "lucide-react";
+import { ShoppingCart, Plus, Trash2, Sparkles, AlertTriangle, Calendar } from "lucide-react";
 import { toast } from "sonner";
 
 const formatBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const PRIORITY_COLORS: Record<string, string> = { high: "bg-destructive/20 text-destructive", medium: "bg-warning/20 text-warning", low: "bg-muted text-muted-foreground" };
 const PRIORITY_LABELS: Record<string, string> = { high: "Alta", medium: "Média", low: "Baixa" };
+const FREQ_LABELS: Record<number, string> = { 7: "Semanal", 15: "Quinzenal", 30: "Mensal" };
+
+function getNextPurchaseDate(lastPurchased: string | null, freqDays: number): Date {
+  if (!lastPurchased) return new Date();
+  const d = new Date(lastPurchased);
+  d.setDate(d.getDate() + freqDays);
+  return d;
+}
+
+function isUrgent(nextDate: Date): boolean {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const nd = new Date(nextDate);
+  nd.setHours(0, 0, 0, 0);
+  return nd <= today;
+}
+
+function formatShortDate(d: Date): string {
+  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+}
+
+type CatalogItem = {
+  canonical_name: string;
+  purchase_frequency_days: number | null;
+  last_purchased_at: string | null;
+  avg_price: number | null;
+};
 
 export default function ShoppingList() {
   const { user } = useAuth();
@@ -59,14 +86,32 @@ export default function ShoppingList() {
     },
   });
 
+  const { data: catalogData } = useQuery({
+    queryKey: ["product-catalog-recurrence"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("product_catalog")
+        .select("canonical_name, purchase_frequency_days, last_purchased_at, avg_price")
+        .not("purchase_frequency_days", "is", null);
+      if (error) throw error;
+      return data as CatalogItem[];
+    },
+  });
+
+  const catalogMap = useMemo(() => {
+    const map = new Map<string, CatalogItem>();
+    catalogData?.forEach((c) => map.set(c.canonical_name.toLowerCase(), c));
+    return map;
+  }, [catalogData]);
+
+  const getItemCatalog = (productName: string) => catalogMap.get(productName.toLowerCase());
+
   const fetchRecurringProducts = async () => {
     const { data } = await supabase
       .from("product_catalog")
       .select("canonical_name, avg_price, unit, purchase_frequency_days, last_purchased_at")
       .not("purchase_frequency_days", "is", null);
-
     if (!data) return [];
-
     const now = new Date();
     return data.filter((p) => {
       if (!p.last_purchased_at) return true;
@@ -84,8 +129,6 @@ export default function ShoppingList() {
         .select()
         .single();
       if (error) throw error;
-
-      // Auto-populate with recurring products
       const recurring = await fetchRecurringProducts();
       if (recurring.length > 0) {
         const itemsToInsert = recurring.map((p) => ({
@@ -99,7 +142,6 @@ export default function ShoppingList() {
         }));
         await supabase.from("shopping_list_items").insert(itemsToInsert);
       }
-
       return { list: data, suggestedCount: recurring.length };
     },
     onSuccess: ({ list, suggestedCount }) => {
@@ -108,11 +150,7 @@ export default function ShoppingList() {
       setActiveListId(list.id);
       setNewListOpen(false);
       setNewListName("");
-      if (suggestedCount > 0) {
-        toast.success(`Lista criada com ${suggestedCount} produto(s) sugerido(s)`);
-      } else {
-        toast.success("Lista criada");
-      }
+      toast.success(suggestedCount > 0 ? `Lista criada com ${suggestedCount} produto(s) sugerido(s)` : "Lista criada");
     },
   });
 
@@ -122,9 +160,7 @@ export default function ShoppingList() {
       const recurring = await fetchRecurringProducts();
       const existingNames = items?.map((i) => i.product_name.toLowerCase()) ?? [];
       const toAdd = recurring.filter((p) => !existingNames.includes(p.canonical_name.toLowerCase()));
-
       if (toAdd.length === 0) return 0;
-
       const itemsToInsert = toAdd.map((p) => ({
         shopping_list_id: activeListId,
         user_id: user!.id,
@@ -139,11 +175,7 @@ export default function ShoppingList() {
     },
     onSuccess: (count) => {
       qc.invalidateQueries({ queryKey: ["shopping-items"] });
-      if (count === 0) {
-        toast.info("Todos os produtos recorrentes já estão na lista");
-      } else {
-        toast.success(`${count} produto(s) adicionado(s)`);
-      }
+      toast[count === 0 ? "info" : "success"](count === 0 ? "Todos os produtos recorrentes já estão na lista" : `${count} produto(s) adicionado(s)`);
     },
   });
 
@@ -196,6 +228,17 @@ export default function ShoppingList() {
   const checkedCount = items?.filter((i) => i.is_checked).length ?? 0;
   const totalCount = items?.length ?? 0;
 
+  const urgentCount = useMemo(() => {
+    if (!items) return 0;
+    return items.filter((item) => {
+      if (item.is_checked) return false;
+      const cat = getItemCatalog(item.product_name);
+      if (!cat || !cat.purchase_frequency_days) return false;
+      const nextDate = getNextPurchaseDate(cat.last_purchased_at, cat.purchase_frequency_days);
+      return isUrgent(nextDate);
+    }).length;
+  }, [items, catalogMap]);
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -231,7 +274,7 @@ export default function ShoppingList() {
             {activeListId && (
               <>
                 <Button variant="outline" size="sm" onClick={() => addSuggested.mutate()} disabled={addSuggested.isPending}>
-                  <Sparkles className="h-4 w-4 mr-1" />Sugerir produtos
+                  <Sparkles className="h-4 w-4 mr-1" />Sugerir
                 </Button>
                 <AlertDialog>
                   <AlertDialogTrigger asChild><Button variant="ghost" size="icon" className="text-destructive"><Trash2 className="h-4 w-4" /></Button></AlertDialogTrigger>
@@ -253,9 +296,21 @@ export default function ShoppingList() {
           {activeListId && (
             <Card className="border-border bg-card">
               <CardHeader className="pb-2">
-                <div className="flex justify-between items-center">
-                  <CardTitle className="text-sm font-medium text-foreground">{checkedCount}/{totalCount} itens</CardTitle>
-                  {estimatedTotal > 0 && <span className="text-sm text-muted-foreground">Est: {formatBRL(estimatedTotal)}</span>}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm font-medium text-foreground">{checkedCount}/{totalCount} itens</span>
+                    {estimatedTotal > 0 && (
+                      <span className="text-base font-semibold text-primary">
+                        Total: {formatBRL(estimatedTotal)}
+                      </span>
+                    )}
+                  </div>
+                  {urgentCount > 0 && (
+                    <div className="flex items-center gap-1.5 text-xs text-destructive">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      <span>{urgentCount} {urgentCount === 1 ? "item urgente" : "itens urgentes"}</span>
+                    </div>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -273,17 +328,49 @@ export default function ShoppingList() {
                   <Button size="icon" onClick={() => newItemName.trim() && addItem.mutate()} disabled={!newItemName.trim()}><Plus className="h-4 w-4" /></Button>
                 </div>
 
-                {items?.map((item) => (
-                  <div key={item.id} className={`flex items-center gap-3 rounded-lg p-2 transition-colors ${item.is_checked ? "opacity-50" : ""}`}>
-                    <Checkbox checked={item.is_checked ?? false} onCheckedChange={(c) => toggleItem.mutate({ id: item.id, checked: !!c })} />
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-sm text-foreground ${item.is_checked ? "line-through" : ""}`}>{item.product_name}</p>
-                      <p className="text-xs text-muted-foreground">{item.quantity} {item.unit}{item.estimated_price ? ` · ${formatBRL(Number(item.estimated_price))}` : ""}</p>
+                {items?.map((item) => {
+                  const cat = getItemCatalog(item.product_name);
+                  const hasFreq = cat && cat.purchase_frequency_days;
+                  const nextDate = hasFreq ? getNextPurchaseDate(cat.last_purchased_at, cat.purchase_frequency_days!) : null;
+                  const urgent = nextDate && !item.is_checked ? isUrgent(nextDate) : false;
+
+                  return (
+                    <div
+                      key={item.id}
+                      className={`flex items-center gap-3 rounded-lg p-2 transition-colors ${item.is_checked ? "opacity-50" : ""} ${urgent ? "border border-destructive/40 bg-destructive/5" : ""}`}
+                    >
+                      <Checkbox checked={item.is_checked ?? false} onCheckedChange={(c) => toggleItem.mutate({ id: item.id, checked: !!c })} />
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm text-foreground ${item.is_checked ? "line-through" : ""}`}>{item.product_name}</p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-xs text-muted-foreground">
+                            {item.quantity} {item.unit}
+                            {item.estimated_price ? ` · ${formatBRL(Number(item.estimated_price))}` : ""}
+                          </p>
+                          {nextDate && (
+                            <span className={`inline-flex items-center gap-0.5 text-[10px] ${urgent ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                              <Calendar className="h-2.5 w-2.5" />
+                              {urgent ? "Comprar hoje" : `Próx: ${formatShortDate(nextDate)}`}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {hasFreq && (
+                          <Badge variant="outline" className="text-[10px] border-0 bg-accent/50 text-accent-foreground">
+                            {FREQ_LABELS[cat.purchase_frequency_days!] ?? `${cat.purchase_frequency_days}d`}
+                          </Badge>
+                        )}
+                        <Badge variant="outline" className={`text-[10px] border-0 ${PRIORITY_COLORS[item.priority ?? "medium"]}`}>
+                          {PRIORITY_LABELS[item.priority ?? "medium"]}
+                        </Badge>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteItem.mutate(item.id)}>
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
                     </div>
-                    <Badge variant="outline" className={`text-[10px] border-0 ${PRIORITY_COLORS[item.priority ?? "medium"]}`}>{PRIORITY_LABELS[item.priority ?? "medium"]}</Badge>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteItem.mutate(item.id)}><Trash2 className="h-3 w-3" /></Button>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {(!items || items.length === 0) && <p className="text-sm text-muted-foreground text-center py-4">Nenhum item na lista.</p>}
               </CardContent>
