@@ -360,20 +360,30 @@ export default function ShoppingList() {
                       <AlertTriangle className="h-3.5 w-3.5" />
                       Produtos recorrentes pendentes
                     </p>
-                    {pendingRecurring.map((cat) => (
-                      <div key={cat.canonical_name} className="flex items-center justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm text-foreground truncate">{cat.canonical_name}</p>
-                          <p className="text-[10px] text-muted-foreground">
-                            {cat.avg_price ? formatBRL(Number(cat.avg_price)) : "—"}
-                            {cat.purchase_frequency_days && ` · ${FREQ_LABELS[cat.purchase_frequency_days] ?? `${cat.purchase_frequency_days}d`}`}
-                          </p>
+                    {pendingRecurring.map((cat) => {
+                      const nextDate = getNextPurchaseDate(cat.last_purchased_at, cat.purchase_frequency_days!);
+                      const urgent = isUrgent(nextDate);
+                      return (
+                        <div key={cat.canonical_name} className="flex items-center justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm text-foreground truncate">{cat.canonical_name}</p>
+                            <div className="flex items-center gap-2">
+                              <p className="text-[10px] text-muted-foreground">
+                                {cat.avg_price ? formatBRL(Number(cat.avg_price)) : "—"}
+                                {cat.purchase_frequency_days && ` · ${FREQ_LABELS[cat.purchase_frequency_days] ?? `${cat.purchase_frequency_days}d`}`}
+                              </p>
+                              <span className={`inline-flex items-center gap-0.5 text-[10px] ${urgent ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                                <Calendar className="h-2.5 w-2.5" />
+                                {urgent ? "Comprar hoje" : `Próx: ${formatShortDate(nextDate)}`}
+                              </span>
+                            </div>
+                          </div>
+                          <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={() => addRecurringItem.mutate(cat)}>
+                            <Plus className="h-3 w-3 mr-1" />Adicionar
+                          </Button>
                         </div>
-                        <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={() => addRecurringItem.mutate(cat)}>
-                          <Plus className="h-3 w-3 mr-1" />Adicionar
-                        </Button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 
