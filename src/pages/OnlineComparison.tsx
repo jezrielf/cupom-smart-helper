@@ -180,9 +180,8 @@ export default function OnlineComparison() {
         {filtered?.map((product) => {
           const amazonState = comparisons[key(product.canonical_name, "amazon")];
           const mlState = comparisons[key(product.canonical_name, "ml")];
-          const ifoodState = comparisons[key(product.canonical_name, "ifood")];
-          const isLoading = amazonState?.loading || mlState?.loading || ifoodState?.loading;
-          const hasResults = amazonState?.results?.length || mlState?.results?.length || ifoodState?.results?.length;
+          const isLoading = amazonState?.loading || mlState?.loading;
+          const hasResults = amazonState?.results?.length || mlState?.results?.length;
 
           return (
             <Card key={product.id}>
