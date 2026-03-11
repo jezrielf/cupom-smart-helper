@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ShoppingCart, Plus, Trash2, Edit2 } from "lucide-react";
+import { ShoppingCart, Plus, Trash2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 const formatBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -59,6 +59,23 @@ export default function ShoppingList() {
     },
   });
 
+  const fetchRecurringProducts = async () => {
+    const { data } = await supabase
+      .from("product_catalog")
+      .select("canonical_name, avg_price, unit, purchase_frequency_days, last_purchased_at")
+      .not("purchase_frequency_days", "is", null);
+
+    if (!data) return [];
+
+    const now = new Date();
+    return data.filter((p) => {
+      if (!p.last_purchased_at) return true;
+      const last = new Date(p.last_purchased_at);
+      const diffDays = (now.getTime() - last.getTime()) / (1000 * 60 * 60 * 24);
+      return diffDays >= (p.purchase_frequency_days ?? 30);
+    });
+  };
+
   const createList = useMutation({
     mutationFn: async (name: string) => {
       const { data, error } = await supabase
@@ -67,14 +84,66 @@ export default function ShoppingList() {
         .select()
         .single();
       if (error) throw error;
-      return data;
+
+      // Auto-populate with recurring products
+      const recurring = await fetchRecurringProducts();
+      if (recurring.length > 0) {
+        const itemsToInsert = recurring.map((p) => ({
+          shopping_list_id: data.id,
+          user_id: user!.id,
+          product_name: p.canonical_name,
+          quantity: 1,
+          unit: p.unit ?? "UN",
+          estimated_price: p.avg_price ? Number(p.avg_price) : null,
+          priority: "medium",
+        }));
+        await supabase.from("shopping_list_items").insert(itemsToInsert);
+      }
+
+      return { list: data, suggestedCount: recurring.length };
     },
-    onSuccess: (data) => {
+    onSuccess: ({ list, suggestedCount }) => {
       qc.invalidateQueries({ queryKey: ["shopping-lists"] });
-      setActiveListId(data.id);
+      qc.invalidateQueries({ queryKey: ["shopping-items"] });
+      setActiveListId(list.id);
       setNewListOpen(false);
       setNewListName("");
-      toast.success("Lista criada");
+      if (suggestedCount > 0) {
+        toast.success(`Lista criada com ${suggestedCount} produto(s) sugerido(s)`);
+      } else {
+        toast.success("Lista criada");
+      }
+    },
+  });
+
+  const addSuggested = useMutation({
+    mutationFn: async () => {
+      if (!activeListId) return 0;
+      const recurring = await fetchRecurringProducts();
+      const existingNames = items?.map((i) => i.product_name.toLowerCase()) ?? [];
+      const toAdd = recurring.filter((p) => !existingNames.includes(p.canonical_name.toLowerCase()));
+
+      if (toAdd.length === 0) return 0;
+
+      const itemsToInsert = toAdd.map((p) => ({
+        shopping_list_id: activeListId,
+        user_id: user!.id,
+        product_name: p.canonical_name,
+        quantity: 1,
+        unit: p.unit ?? "UN",
+        estimated_price: p.avg_price ? Number(p.avg_price) : null,
+        priority: "medium",
+      }));
+      await supabase.from("shopping_list_items").insert(itemsToInsert);
+      return toAdd.length;
+    },
+    onSuccess: (count) => {
+      qc.invalidateQueries({ queryKey: ["shopping-items"] });
+      if (count === 0) {
+        toast.info("Todos os produtos recorrentes já estão na lista");
+      } else {
+        toast.success(`${count} produto(s) adicionado(s)`);
+      }
     },
   });
 
@@ -152,7 +221,7 @@ export default function ShoppingList() {
         </div>
       ) : (
         <>
-          <div className="flex gap-3 items-center">
+          <div className="flex gap-3 items-center flex-wrap">
             <Select value={activeListId ?? ""} onValueChange={setActiveListId}>
               <SelectTrigger className="w-56"><SelectValue placeholder="Selecione uma lista" /></SelectTrigger>
               <SelectContent>
@@ -160,19 +229,24 @@ export default function ShoppingList() {
               </SelectContent>
             </Select>
             {activeListId && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild><Button variant="ghost" size="icon" className="text-destructive"><Trash2 className="h-4 w-4" /></Button></AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Excluir lista?</AlertDialogTitle>
-                    <AlertDialogDescription>Todos os itens serão excluídos.</AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                    <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={() => deleteList.mutate(activeListId)}>Excluir</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+              <>
+                <Button variant="outline" size="sm" onClick={() => addSuggested.mutate()} disabled={addSuggested.isPending}>
+                  <Sparkles className="h-4 w-4 mr-1" />Sugerir produtos
+                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild><Button variant="ghost" size="icon" className="text-destructive"><Trash2 className="h-4 w-4" /></Button></AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Excluir lista?</AlertDialogTitle>
+                      <AlertDialogDescription>Todos os itens serão excluídos.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={() => deleteList.mutate(activeListId)}>Excluir</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </>
             )}
           </div>
 
@@ -185,7 +259,6 @@ export default function ShoppingList() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                {/* Add item */}
                 <div className="flex gap-2">
                   <Input placeholder="Nome do produto" value={newItemName} onChange={(e) => setNewItemName(e.target.value)} className="flex-1" onKeyDown={(e) => e.key === "Enter" && newItemName.trim() && addItem.mutate()} />
                   <Input type="number" value={newItemQty} onChange={(e) => setNewItemQty(e.target.value)} className="w-16" min={1} />
@@ -200,7 +273,6 @@ export default function ShoppingList() {
                   <Button size="icon" onClick={() => newItemName.trim() && addItem.mutate()} disabled={!newItemName.trim()}><Plus className="h-4 w-4" /></Button>
                 </div>
 
-                {/* Items */}
                 {items?.map((item) => (
                   <div key={item.id} className={`flex items-center gap-3 rounded-lg p-2 transition-colors ${item.is_checked ? "opacity-50" : ""}`}>
                     <Checkbox checked={item.is_checked ?? false} onCheckedChange={(c) => toggleItem.mutate({ id: item.id, checked: !!c })} />
@@ -220,12 +292,11 @@ export default function ShoppingList() {
         </>
       )}
 
-      {/* New List Dialog */}
       <Dialog open={newListOpen} onOpenChange={setNewListOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Nova Lista</DialogTitle>
-            <DialogDescription>Dê um nome para sua lista de compras.</DialogDescription>
+            <DialogDescription>Produtos recorrentes serão adicionados automaticamente.</DialogDescription>
           </DialogHeader>
           <Input placeholder="Ex: Compras da semana" value={newListName} onChange={(e) => setNewListName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && newListName.trim() && createList.mutate(newListName.trim())} />
           <DialogFooter>
