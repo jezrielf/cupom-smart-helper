@@ -1,1 +1,4 @@
 project_id = "pchwnmftqtxlpxmlkrhg"
+
+[functions.fetch-nfce]
+verify_jwt = false
