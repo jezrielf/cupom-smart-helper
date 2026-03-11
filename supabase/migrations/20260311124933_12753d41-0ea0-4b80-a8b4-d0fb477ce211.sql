@@ -1,0 +1,1 @@
+ALTER TABLE public.product_catalog ADD COLUMN purchase_frequency_days integer DEFAULT NULL;

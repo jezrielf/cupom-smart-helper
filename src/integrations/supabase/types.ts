@@ -75,6 +75,7 @@ export type Database = {
           max_price: number | null
           min_price: number | null
           product_code: string | null
+          purchase_frequency_days: number | null
           times_purchased: number | null
           unit: string | null
           updated_at: string
@@ -92,6 +93,7 @@ export type Database = {
           max_price?: number | null
           min_price?: number | null
           product_code?: string | null
+          purchase_frequency_days?: number | null
           times_purchased?: number | null
           unit?: string | null
           updated_at?: string
@@ -109,6 +111,7 @@ export type Database = {
           max_price?: number | null
           min_price?: number | null
           product_code?: string | null
+          purchase_frequency_days?: number | null
           times_purchased?: number | null
           unit?: string | null
           updated_at?: string
