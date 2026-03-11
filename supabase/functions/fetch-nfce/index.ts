@@ -132,7 +132,7 @@ async function tryFirecrawlExtract(
           formats: ["extract"],
           extract: { schema: FIRECRAWL_SCHEMA, prompt: FIRECRAWL_PROMPT },
           waitFor: 5000,
-          timeout: 45000,
+          timeout: attempt === 1 ? 30000 : 20000,
         }),
       });
 
