@@ -388,28 +388,36 @@ Deno.serve(async (req) => {
       // Native fetch fallback
       if (!html) {
         console.log("Using native fetch for:", url);
-        const response = await fetch(url, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml",
-          },
-          redirect: "follow",
-        });
+        try {
+          const response = await fetch(url, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml",
+            },
+            redirect: "follow",
+          });
 
-        if (!response.ok) {
-          if (response.status === 404) {
+          if (!response.ok) {
+            if (response.status === 404) {
+              return new Response(
+                JSON.stringify({ error: "Cupom fiscal não encontrado" }),
+                { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              );
+            }
             return new Response(
-              JSON.stringify({ error: "Cupom fiscal não encontrado" }),
-              { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              JSON.stringify({ error: `Erro ao acessar o portal: ${response.status}` }),
+              { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
           }
+
+          html = await response.text();
+        } catch (fetchError) {
+          console.error("Native fetch failed:", fetchError);
           return new Response(
-            JSON.stringify({ error: `Erro ao acessar o portal: ${response.status}` }),
+            JSON.stringify({ error: "Não foi possível acessar o portal da SEFAZ. Tente novamente em alguns instantes." }),
             { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-
-        html = await response.text();
       }
 
       parsed = parseNfceHtml(html);
