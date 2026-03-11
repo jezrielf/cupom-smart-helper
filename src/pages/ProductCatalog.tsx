@@ -95,6 +95,7 @@ export default function ProductCatalog() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["product-catalog-freq"] });
+      qc.invalidateQueries({ queryKey: ["product-catalog-recurrence"] });
       toast.success("Recorrência atualizada");
     },
   });

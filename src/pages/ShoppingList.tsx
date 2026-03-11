@@ -241,7 +241,7 @@ export default function ShoppingList() {
 
   // Recurring products not yet in the active list
   const pendingRecurring = useMemo(() => {
-    if (!catalogData || !activeListId) return [];
+    if (!catalogData) return [];
     const existingNames = new Set(items?.map((i) => i.product_name.toLowerCase()) ?? []);
     return catalogData.filter((c) => {
       if (!c.purchase_frequency_days) return false;
@@ -249,7 +249,7 @@ export default function ShoppingList() {
       const nextDate = getNextPurchaseDate(c.last_purchased_at, c.purchase_frequency_days);
       return isUrgent(nextDate);
     });
-  }, [catalogData, items, activeListId]);
+  }, [catalogData, items]);
 
   const addRecurringItem = useMutation({
     mutationFn: async (cat: CatalogItem) => {
@@ -287,9 +287,12 @@ export default function ShoppingList() {
       </div>
 
       {!lists?.length ? (
-        <div className="flex flex-col items-center justify-center py-20 gap-3">
+        <div className="flex flex-col items-center justify-center py-10 gap-3">
           <ShoppingCart className="h-10 w-10 text-muted-foreground" />
           <p className="text-muted-foreground">Crie sua primeira lista de compras.</p>
+          {pendingRecurring.length > 0 && (
+            <p className="text-sm text-primary font-medium">{pendingRecurring.length} produto(s) recorrente(s) pendente(s) serão adicionados automaticamente.</p>
+          )}
           <Button onClick={() => setNewListOpen(true)}><Plus className="h-4 w-4 mr-1" />Nova Lista</Button>
         </div>
       ) : (
