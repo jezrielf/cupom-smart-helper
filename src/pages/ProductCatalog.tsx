@@ -411,7 +411,7 @@ export default function ProductCatalog() {
                   <TableHead>Qtd / Unid.</TableHead>
                   <TableHead className="text-right">Preço Unit.</TableHead>
                   <TableHead className="text-right">Total</TableHead>
-                  <TableHead>Online (AMZ / ML / iFood)</TableHead>
+                  <TableHead>Online (AMZ / ML)</TableHead>
                   <TableHead>Supermercado</TableHead>
                   <TableHead className="w-36">
                     <RefreshCw className="h-3 w-3 inline mr-1" />Recorrência
