@@ -60,7 +60,6 @@ export default function OnlineComparison() {
       const fnMap: Record<Source, string> = {
         amazon: "search-amazon",
         ml: "search-mercadolivre",
-        ifood: "search-ifood",
       };
       const { data, error } = await supabase.functions.invoke(fnMap[source], {
         body: { product_name: productName },
