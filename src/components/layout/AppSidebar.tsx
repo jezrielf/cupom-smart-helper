@@ -37,6 +37,7 @@ const navItems = [
   { title: "Produtos", url: "/produtos", icon: Package },
   { title: "Lista de Compras", url: "/lista", icon: ShoppingCart, badge: 3 },
   { title: "Análises", url: "/analises", icon: TrendingUp },
+  { title: "Online", url: "/comparativo-online", icon: Globe },
 ];
 
 export function AppSidebar() {
