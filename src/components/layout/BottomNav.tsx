@@ -1,19 +1,16 @@
 import {
   LayoutDashboard,
-  QrCode,
   FileText,
+  Package,
   ShoppingCart,
-  TrendingUp,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
-import { Badge } from "@/components/ui/badge";
 
 const bottomItems = [
   { title: "Home", url: "/", icon: LayoutDashboard },
   { title: "Cupons", url: "/cupons", icon: FileText },
-  { title: "Scanner", url: "/scanner", icon: QrCode, highlight: true },
-  { title: "Lista", url: "/lista", icon: ShoppingCart, badge: 3 },
-  { title: "Análises", url: "/analises", icon: TrendingUp },
+  { title: "Produtos", url: "/produtos", icon: Package },
+  { title: "Lista", url: "/lista", icon: ShoppingCart },
 ];
 
 export function BottomNav() {
