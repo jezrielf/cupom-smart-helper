@@ -24,20 +24,7 @@ export function BottomNav() {
           className="relative flex flex-col items-center justify-center gap-1 px-3 py-1 text-muted-foreground transition-colors"
           activeClassName="text-primary"
         >
-          {item.highlight ? (
-            <div className="flex h-11 w-11 -mt-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg">
-              <item.icon className="h-5 w-5" />
-            </div>
-          ) : (
-            <div className="relative">
-              <item.icon className="h-5 w-5" />
-              {item.badge && (
-                <Badge className="absolute -top-2 -right-3 h-4 min-w-4 flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] px-1 leading-none">
-                  {item.badge}
-                </Badge>
-              )}
-            </div>
-          )}
+          <item.icon className="h-5 w-5" />
           <span className="text-[10px] font-medium">{item.title}</span>
         </NavLink>
       ))}
