@@ -240,8 +240,7 @@ export default function ShoppingList() {
     return catalogData.filter((c) => {
       if (!c.purchase_frequency_days) return false;
       if (existingNames.has(c.canonical_name.toLowerCase())) return false;
-      const nextDate = getNextPurchaseDate(c.last_purchased_at, c.purchase_frequency_days);
-      return isUrgent(nextDate);
+      return true;
     });
   }, [catalogData, items]);
 
