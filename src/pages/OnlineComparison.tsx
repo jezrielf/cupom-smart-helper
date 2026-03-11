@@ -134,14 +134,13 @@ export default function OnlineComparison() {
           </div>
 
           {/* Free search results */}
-          {(comparisons[key(freeSearch.trim(), "amazon")] || comparisons[key(freeSearch.trim(), "ml")] || comparisons[key(freeSearch.trim(), "ifood")]) && (
+          {(comparisons[key(freeSearch.trim(), "amazon")] || comparisons[key(freeSearch.trim(), "ml")]) && (
             <div className="mt-4">
               <ComparisonTabs
                 productName={freeSearch.trim()}
                 localPrice={null}
                 amazonState={comparisons[key(freeSearch.trim(), "amazon")]}
                 mlState={comparisons[key(freeSearch.trim(), "ml")]}
-                ifoodState={comparisons[key(freeSearch.trim(), "ifood")]}
               />
             </div>
           )}
