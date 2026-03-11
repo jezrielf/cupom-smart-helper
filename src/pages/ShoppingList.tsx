@@ -241,7 +241,7 @@ export default function ShoppingList() {
 
   // Recurring products not yet in the active list
   const pendingRecurring = useMemo(() => {
-    if (!catalogData || !activeListId) return [];
+    if (!catalogData) return [];
     const existingNames = new Set(items?.map((i) => i.product_name.toLowerCase()) ?? []);
     return catalogData.filter((c) => {
       if (!c.purchase_frequency_days) return false;
@@ -249,7 +249,7 @@ export default function ShoppingList() {
       const nextDate = getNextPurchaseDate(c.last_purchased_at, c.purchase_frequency_days);
       return isUrgent(nextDate);
     });
-  }, [catalogData, items, activeListId]);
+  }, [catalogData, items]);
 
   const addRecurringItem = useMutation({
     mutationFn: async (cat: CatalogItem) => {
