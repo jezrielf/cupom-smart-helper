@@ -133,7 +133,7 @@ export default function ProductCatalog() {
     queryFn: async () => {
       const { data } = await supabase
         .from("product_catalog")
-        .select("canonical_name, purchase_frequency_days, online_price, online_url, online_updated_at, ml_price, ml_url, ml_updated_at, ifood_price, ifood_url, ifood_updated_at");
+        .select("canonical_name, purchase_frequency_days, online_price, online_url, online_updated_at, ml_price, ml_url, ml_updated_at");
       return data ?? [];
     },
   });
