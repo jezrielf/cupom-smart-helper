@@ -15,6 +15,7 @@ import PriceComparison from "./pages/PriceComparison";
 import ProductCatalog from "./pages/ProductCatalog";
 import ShoppingList from "./pages/ShoppingList";
 import Analytics from "./pages/Analytics";
+import OnlineComparison from "./pages/OnlineComparison";
 import Login from "./pages/Login";
 import ResetPassword from "./pages/ResetPassword";
 import NotFound from "./pages/NotFound";
@@ -47,6 +48,7 @@ const App = () => (
               <Route path="/produtos" element={<ProductCatalog />} />
               <Route path="/lista" element={<ShoppingList />} />
               <Route path="/analises" element={<Analytics />} />
+              <Route path="/comparativo-online" element={<OnlineComparison />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
