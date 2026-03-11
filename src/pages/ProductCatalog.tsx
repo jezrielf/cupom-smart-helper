@@ -374,10 +374,8 @@ export default function ProductCatalog() {
                     entry={entry}
                     onRefreshAmazon={() => handleRefreshOnlinePrice(p.product_name_normalized)}
                     onRefreshML={() => handleRefreshMLPrice(p.product_name_normalized)}
-                    onRefreshIfood={() => handleRefreshIfoodPrice(p.product_name_normalized)}
                     isRefreshingAmazon={refreshingAmazon.has(p.product_name_normalized)}
                     isRefreshingML={refreshingML.has(p.product_name_normalized)}
-                    isRefreshingIfood={refreshingIfood.has(p.product_name_normalized)}
                   />
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs text-muted-foreground truncate max-w-[120px]">{smName}</span>
