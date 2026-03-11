@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.search-mercadolivre]
 verify_jwt = false
+
+[functions.search-ifood]
+verify_jwt = false
