@@ -14,6 +14,7 @@ import { FileText, ScanLine, Trash2, CreditCard } from "lucide-react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
 import { toast } from "sonner";
+import { formatProductDetail } from "@/lib/formatUnit";
 
 const formatBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -188,7 +189,7 @@ export default function Receipts() {
               <div key={p.id} className="flex justify-between items-center text-sm py-1 border-b border-border last:border-0">
                 <div className="flex-1">
                   <p className="text-foreground">{p.product_name}</p>
-                  <p className="text-xs text-muted-foreground">{p.quantity} {p.unit} × {formatBRL(Number(p.unit_price))}</p>
+                  <p className="text-xs text-muted-foreground">{formatProductDetail(Number(p.quantity), p.unit, Number(p.unit_price))}</p>
                 </div>
                 <p className="font-medium text-foreground">{formatBRL(Number(p.total_price))}</p>
               </div>
