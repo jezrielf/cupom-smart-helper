@@ -16,9 +16,10 @@ const formatBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", 
 
 const FREQUENCY_OPTIONS = [
   { value: "none", label: "Sem recorrência" },
-  { value: "7", label: "Semanal" },
   { value: "15", label: "Quinzenal" },
   { value: "30", label: "Mensal" },
+  { value: "60", label: "Bimestral" },
+  { value: "90", label: "Trimestral" },
 ];
 
 export default function ProductCatalog() {
