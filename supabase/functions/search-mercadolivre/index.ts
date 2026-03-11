@@ -24,73 +24,120 @@ const ABBREVIATION_MAP: Record<string, string> = {
   'refrig': 'refrigerante',
   'integ': 'integral',
   'trad': 'tradicional',
+  'antissep': 'antisseptico',
+  'hig': 'higienico',
+  'alc': 'alcool',
+  'desinf': 'desinfetante',
+  'apar': 'aparelho',
+  'mist': 'mistura',
+  'past': 'pastilha',
+  'tint': 'tintura',
+  'esc': 'escova',
+  'org': 'organico',
+  'desc': 'descartavel',
+  'acond': 'acondicionador',
+  'deseng': 'desengraxante',
+  'limp': 'limpador',
+  'enxag': 'enxaguante',
 };
 
-// Packaging/unit codes to remove
 const PACKAGING_CODES = /\b(pc|pt|gl|fr|sc|tp|gr|cx|fd|bd|lt|un|dp|tb|env|fl|sq|pct|gar|sac)\b/g;
-
-// Weight/volume patterns like 500G, 1KG, 900ML, 200G, 1L, 1.5L
-const WEIGHT_VOLUME = /\b\d+([.,]\d+)?\s*(g|kg|ml|l|un|cm|mm)\b/g;
-
-// Size/variant codes like T1, N8, LT1, N5
+const WEIGHT_VOLUME = /\b(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/gi;
 const SIZE_CODES = /\b[a-z]?\d{1,2}\b/g;
 
-function normalizeForSearch(name: string): string {
+interface NormalizeResult {
+  searchTerms: string;
+  volume: string | null;
+}
+
+function normalizeForSearch(name: string): NormalizeResult {
   let normalized = name
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
 
-  // Remove weight/volume first (before other patterns consume digits)
+  // Extract volume/weight BEFORE removing it
+  const volumeMatches: string[] = [];
+  let match: RegExpExecArray | null;
+  const volRegex = /\b(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/gi;
+  while ((match = volRegex.exec(normalized)) !== null) {
+    const qty = match[1].replace(',', '.');
+    const unit = match[3].toLowerCase();
+    volumeMatches.push(`${qty}${unit}`);
+  }
+  const volume = volumeMatches.length > 0 ? volumeMatches[0] : null;
+
   normalized = normalized.replace(WEIGHT_VOLUME, ' ');
-
-  // Remove packaging codes
   normalized = normalized.replace(PACKAGING_CODES, ' ');
-
-  // Remove size codes (single letter + 1-2 digits)
   normalized = normalized.replace(SIZE_CODES, ' ');
 
-  // Expand abbreviations
-  normalized = normalized.replace(/\b([a-z]+)\b/g, (match) => {
-    return ABBREVIATION_MAP[match] || match;
-  });
-
-  // Remove non-alphanumeric
+  normalized = normalized.replace(/\b([a-z]+)\b/g, (m) => ABBREVIATION_MAP[m] || m);
   normalized = normalized.replace(/[^a-z0-9\s]/g, '');
-
-  // Collapse whitespace and convert to hyphens
   normalized = normalized.trim().replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 
-  return normalized;
+  // Append volume back
+  if (volume) {
+    normalized = `${normalized}-${volume}`;
+  }
+
+  console.log(`ML normalized: "${name}" → "${normalized}" (volume: ${volume})`);
+  return { searchTerms: normalized, volume };
+}
+
+function parseVolume(text: string): string | null {
+  const m = text.match(/(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/i);
+  if (!m) return null;
+  const qty = parseFloat(m[1].replace(',', '.'));
+  const unit = m[3].toLowerCase();
+  if (unit === 'l') return `${qty * 1000}ml`;
+  if (unit === 'kg') return `${qty * 1000}g`;
+  return `${qty}${unit}`;
+}
+
+function isVolumeCompatible(resultVolume: string | null, targetVolume: string | null): boolean {
+  if (!targetVolume || !resultVolume) return true;
+  const target = parseVolume(targetVolume);
+  const result = parseVolume(resultVolume);
+  if (!target || !result) return true;
+
+  const targetUnit = target.replace(/[\d.]/g, '');
+  const resultUnit = result.replace(/[\d.]/g, '');
+  if (targetUnit !== resultUnit) return true;
+
+  const targetQty = parseFloat(target.replace(/[a-z]/gi, ''));
+  const resultQty = parseFloat(result.replace(/[a-z]/gi, ''));
+  if (isNaN(targetQty) || isNaN(resultQty)) return true;
+
+  const ratio = resultQty / targetQty;
+  return ratio >= 0.8 && ratio <= 1.2;
 }
 
 interface MLProduct {
   title: string;
   price: number;
   url: string;
+  volume?: string;
 }
 
-function parseMarkdownResults(markdown: string): MLProduct[] {
+function parseMarkdownResults(markdown: string, targetVolume: string | null): MLProduct[] {
   const results: MLProduct[] = [];
   const lines = markdown.split('\n');
 
-  for (let li = 0; li < lines.length; li++) {
+  for (let li = 0; li < lines.length && results.length < 10; li++) {
     const line = lines[li];
 
-    // Pattern 1: ML links [Title](url)
     const titleMatch = line.match(/\[([^\]]{5,})\]\((https?:\/\/[^\s)]*mercadolivre[^\s)]+)\)/);
     if (titleMatch) {
       const title = titleMatch[1].trim();
       const url = titleMatch[2];
-
       const price = findPriceNearby(lines, li);
       if (price > 0) {
-        results.push({ title, price, url });
+        results.push({ title, price, url, volume: parseVolume(title) || undefined });
+        continue;
       }
     }
 
-    // Pattern 2: Bold titles **Title** or ### Title without links
-    if (results.length < 5 && !titleMatch) {
+    if (!titleMatch) {
       const boldMatch = line.match(/^(?:\*\*|###?\s)(.{10,})(?:\*\*)?$/);
       if (boldMatch) {
         const title = boldMatch[1].replace(/\*\*/g, '').trim();
@@ -101,38 +148,39 @@ function parseMarkdownResults(markdown: string): MLProduct[] {
             const urlMatch = lines[j].match(/\((https?:\/\/[^\s)]*mercadolivre[^\s)]+)\)/);
             if (urlMatch) { url = urlMatch[1]; break; }
           }
-          results.push({ title, price, url });
+          results.push({ title, price, url, volume: parseVolume(title) || undefined });
         }
       }
     }
-
-    if (results.length >= 5) break;
   }
 
-  return results;
+  if (targetVolume) {
+    const compatible = results.filter(r => isVolumeCompatible(r.volume || r.title, targetVolume));
+    if (compatible.length > 0) return compatible.slice(0, 5);
+  }
+
+  return results.slice(0, 5);
 }
 
 function findPriceNearby(lines: string[], idx: number): number {
   const priceRegex = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/;
-
   for (let j = idx; j < Math.min(idx + 8, lines.length); j++) {
     const priceMatch = lines[j].match(priceRegex);
     if (priceMatch) {
       const priceStr = priceMatch[1].replace(/\./g, '').replace(',', '.');
       const price = parseFloat(priceStr);
-      if (!isNaN(price) && price > 0 && price < 10000) {
-        return price;
-      }
+      if (!isNaN(price) && price > 0 && price < 10000) return price;
     }
   }
-
   return 0;
 }
 
-async function scrapeUrl(apiKey: string, url: string): Promise<{ results: MLProduct[]; searchUrl: string }> {
+async function scrapeUrl(apiKey: string, url: string, volume: string | null): Promise<{ results: MLProduct[]; searchUrl: string }> {
   let results: MLProduct[] = [];
 
-  // Try extract format first
+  const volumeHint = volume ? ` that match the size/volume '${volume}'.` : '.';
+  const extractPrompt = `Extract the first 5 product results with their title, price in BRL as a number, product URL, and size/volume (e.g. 500ml, 1kg). Only include items with a valid price${volumeHint} Prioritize products whose size matches '${volume || 'any'}'.`;
+
   try {
     const extractResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
       method: 'POST',
@@ -155,6 +203,7 @@ async function scrapeUrl(apiKey: string, url: string): Promise<{ results: MLProd
                     title: { type: 'string', description: 'Product title' },
                     price: { type: 'number', description: 'Product price in BRL as a number (e.g. 24.50)' },
                     url: { type: 'string', description: 'Product URL on Mercado Livre' },
+                    volume: { type: 'string', description: 'Product size/volume/weight, e.g. 500ml, 1kg, 200g, 1L' },
                   },
                   required: ['title', 'price'],
                 },
@@ -162,7 +211,7 @@ async function scrapeUrl(apiKey: string, url: string): Promise<{ results: MLProd
             },
             required: ['products'],
           },
-          prompt: 'Extract the first 5 product results with their title, price in BRL as a number, and product URL. Only include items with a valid price.',
+          prompt: extractPrompt,
         },
         waitFor: 5000,
       }),
@@ -177,20 +226,29 @@ async function scrapeUrl(apiKey: string, url: string): Promise<{ results: MLProd
 
     const extracted = extractData?.data?.extract || extractData?.extract;
     if (extracted?.products && Array.isArray(extracted.products)) {
-      results = extracted.products
+      const allProducts = extracted.products
         .filter((p: any) => p.title && typeof p.price === 'number' && p.price > 0)
-        .slice(0, 5)
         .map((p: any) => ({
           title: p.title,
           price: p.price,
           url: p.url || url,
+          volume: p.volume || undefined,
         }));
+
+      if (volume && allProducts.length > 0) {
+        const compatible = allProducts.filter((p: MLProduct) =>
+          isVolumeCompatible(p.volume || p.title, volume)
+        );
+        results = (compatible.length > 0 ? compatible : allProducts).slice(0, 5);
+        console.log(`Volume filter: ${compatible.length}/${allProducts.length} compatible with ${volume}`);
+      } else {
+        results = allProducts.slice(0, 5);
+      }
     }
   } catch (e) {
     console.error('Extract failed, trying markdown fallback:', e);
   }
 
-  // Fallback: markdown extraction
   if (results.length === 0) {
     try {
       const mdResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
@@ -208,9 +266,8 @@ async function scrapeUrl(apiKey: string, url: string): Promise<{ results: MLProd
 
       const mdData = await mdResponse.json();
       const markdown = mdData?.data?.markdown || mdData?.markdown || '';
-
       if (markdown) {
-        results = parseMarkdownResults(markdown);
+        results = parseMarkdownResults(markdown, volume);
       }
     } catch (e) {
       console.error('Markdown fallback also failed:', e);
@@ -243,20 +300,18 @@ Deno.serve(async (req) => {
       );
     }
 
-    const normalized = normalizeForSearch(product_name);
-    console.log(`Normalized "${product_name}" → "${normalized}"`);
+    const { searchTerms, volume } = normalizeForSearch(product_name);
+    console.log(`Normalized "${product_name}" → "${searchTerms}" (volume: ${volume})`);
 
-    // Try supermarket-specific URL first
-    const mlUrl = `https://lista.mercadolivre.com.br/supermercado/market/${normalized}_OrderId_PRICE_NoIndex_True?sb=storefront_url`;
+    const mlUrl = `https://lista.mercadolivre.com.br/supermercado/market/${searchTerms}_OrderId_PRICE_NoIndex_True?sb=storefront_url`;
     console.log('Scraping Mercado Livre URL:', mlUrl);
 
-    let { results, searchUrl } = await scrapeUrl(apiKey, mlUrl);
+    let { results, searchUrl } = await scrapeUrl(apiKey, mlUrl, volume);
 
-    // Fallback: broader search if supermarket URL returned 0 results
     if (results.length === 0) {
-      const broadUrl = `https://lista.mercadolivre.com.br/${normalized}_OrderId_PRICE_NoIndex_True`;
+      const broadUrl = `https://lista.mercadolivre.com.br/${searchTerms}_OrderId_PRICE_NoIndex_True`;
       console.log('Supermarket URL returned 0 results, trying broad URL:', broadUrl);
-      const broad = await scrapeUrl(apiKey, broadUrl);
+      const broad = await scrapeUrl(apiKey, broadUrl, volume);
       results = broad.results;
       searchUrl = broad.searchUrl;
     }
