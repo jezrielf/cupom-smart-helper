@@ -232,9 +232,31 @@ export default function ProductCatalog() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-foreground">Produtos</h1>
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input placeholder="Buscar produto ou código..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2 max-w-lg">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input placeholder="Buscar produto ou código..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefreshAll}
+            disabled={!!bulkProgress || filtered.length === 0}
+            className="whitespace-nowrap"
+          >
+            {bulkProgress ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+            {bulkProgress ? "Atualizando..." : "Atualizar todos"}
+          </Button>
+        </div>
+        {bulkProgress && (
+          <div className="max-w-lg space-y-1">
+            <Progress value={(bulkProgress.current / bulkProgress.total) * 100} className="h-2" />
+            <p className="text-xs text-muted-foreground truncate">
+              {bulkProgress.current + 1} de {bulkProgress.total} — {bulkProgress.currentProduct}
+            </p>
+          </div>
+        )}
       </div>
 
       {filtered.length === 0 ? (
