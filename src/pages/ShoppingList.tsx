@@ -112,13 +112,7 @@ export default function ShoppingList() {
       .select("canonical_name, avg_price, unit, purchase_frequency_days, last_purchased_at")
       .not("purchase_frequency_days", "is", null);
     if (!data) return [];
-    const now = new Date();
-    return data.filter((p) => {
-      if (!p.last_purchased_at) return true;
-      const last = new Date(p.last_purchased_at);
-      const diffDays = (now.getTime() - last.getTime()) / (1000 * 60 * 60 * 24);
-      return diffDays >= (p.purchase_frequency_days ?? 30);
-    });
+    return data;
   };
 
   const createList = useMutation({
