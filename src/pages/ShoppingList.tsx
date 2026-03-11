@@ -358,7 +358,29 @@ export default function ShoppingList() {
                   <Button size="icon" onClick={() => newItemName.trim() && addItem.mutate()} disabled={!newItemName.trim()}><Plus className="h-4 w-4" /></Button>
                 </div>
 
-                {items?.map((item) => {
+                {pendingRecurring.length > 0 && (
+                  <div className="rounded-lg border border-accent/50 bg-accent/10 p-3 space-y-2">
+                    <p className="text-xs font-medium text-accent-foreground flex items-center gap-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      Produtos recorrentes pendentes
+                    </p>
+                    {pendingRecurring.map((cat) => (
+                      <div key={cat.canonical_name} className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm text-foreground truncate">{cat.canonical_name}</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {cat.avg_price ? formatBRL(Number(cat.avg_price)) : "—"}
+                            {cat.purchase_frequency_days && ` · ${FREQ_LABELS[cat.purchase_frequency_days] ?? `${cat.purchase_frequency_days}d`}`}
+                          </p>
+                        </div>
+                        <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={() => addRecurringItem.mutate(cat)}>
+                          <Plus className="h-3 w-3 mr-1" />Adicionar
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                   const cat = getItemCatalog(item.product_name);
                   const hasFreq = cat && cat.purchase_frequency_days;
                   const nextDate = hasFreq ? getNextPurchaseDate(cat.last_purchased_at, cat.purchase_frequency_days!) : null;
