@@ -257,6 +257,9 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Normalize URL domain - nfce.fazenda.mg.gov.br often has TLS issues
+    url = url.replace("nfce.fazenda.mg.gov.br", "portalsped.fazenda.mg.gov.br");
+
     // Try Firecrawl JSON extraction first (AI-powered structured extraction)
     const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
     let parsed: ReturnType<typeof parseNfceHtml> | null = null;
