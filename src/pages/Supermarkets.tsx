@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Store, Star, Search, MapPin, FileText } from "lucide-react";
+import { Store, Star, Search, MapPin, FileText, Edit2, Check, X } from "lucide-react";
 import { format } from "date-fns";
 import { toast } from "sonner";
 
@@ -19,6 +19,8 @@ export default function Supermarkets() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [editedName, setEditedName] = useState("");
 
   const { data: supermarkets, isLoading } = useQuery({
     queryKey: ["supermarkets-all"],
@@ -45,6 +47,18 @@ export default function Supermarkets() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["supermarkets-all"] }),
   });
 
+  const updateNameMut = useMutation({
+    mutationFn: async ({ id, trade_name }: { id: string; trade_name: string }) => {
+      const { error } = await supabase.from("supermarkets").update({ trade_name }).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supermarkets-all"] });
+      setEditingName(false);
+      toast.success("Nome fantasia atualizado");
+    },
+  });
+
   const filtered = supermarkets?.filter((s) => {
     const q = search.toLowerCase();
     return !q || s.name.toLowerCase().includes(q) || s.trade_name?.toLowerCase().includes(q);
@@ -57,6 +71,24 @@ export default function Supermarkets() {
 
   const selectedSupermarket = supermarkets?.find((s) => s.id === selectedId);
   const selectedReceipts = receipts?.filter((r) => r.supermarket_id === selectedId)?.sort((a, b) => new Date(b.purchase_date).getTime() - new Date(a.purchase_date).getTime()).slice(0, 10) ?? [];
+
+  const handleOpenDialog = (id: string) => {
+    setSelectedId(id);
+    setEditingName(false);
+    const sm = supermarkets?.find((s) => s.id === id);
+    setEditedName(sm?.trade_name || sm?.name || "");
+  };
+
+  const handleStartEdit = () => {
+    setEditingName(true);
+    setEditedName(selectedSupermarket?.trade_name || selectedSupermarket?.name || "");
+  };
+
+  const handleSaveName = () => {
+    if (selectedId && editedName.trim()) {
+      updateNameMut.mutate({ id: selectedId, trade_name: editedName.trim() });
+    }
+  };
 
   if (isLoading) {
     return (
@@ -88,7 +120,7 @@ export default function Supermarkets() {
           {filtered.map((s) => {
             const stats = getStats(s.id);
             return (
-              <Card key={s.id} className="border-border bg-card cursor-pointer hover:bg-accent/40 transition-colors" onClick={() => setSelectedId(s.id)}>
+              <Card key={s.id} className="border-border bg-card cursor-pointer hover:bg-accent/40 transition-colors" onClick={() => handleOpenDialog(s.id)}>
                 <CardContent className="p-4 space-y-2">
                   <div className="flex items-start justify-between">
                     <div>
@@ -116,10 +148,35 @@ export default function Supermarkets() {
         </div>
       )}
 
-      <Dialog open={!!selectedId} onOpenChange={(o) => !o && setSelectedId(null)}>
+      <Dialog open={!!selectedId} onOpenChange={(o) => { if (!o) { setSelectedId(null); setEditingName(false); } }}>
         <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{selectedSupermarket?.trade_name || selectedSupermarket?.name}</DialogTitle>
+            <div className="flex items-center gap-2">
+              {editingName ? (
+                <div className="flex items-center gap-2 flex-1">
+                  <Input
+                    value={editedName}
+                    onChange={(e) => setEditedName(e.target.value)}
+                    className="text-lg font-semibold"
+                    onKeyDown={(e) => e.key === "Enter" && handleSaveName()}
+                    autoFocus
+                  />
+                  <Button size="icon" variant="ghost" onClick={handleSaveName} disabled={updateNameMut.isPending}>
+                    <Check className="h-4 w-4 text-success" />
+                  </Button>
+                  <Button size="icon" variant="ghost" onClick={() => setEditingName(false)}>
+                    <X className="h-4 w-4 text-destructive" />
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <DialogTitle>{selectedSupermarket?.trade_name || selectedSupermarket?.name}</DialogTitle>
+                  <Button size="icon" variant="ghost" onClick={handleStartEdit}>
+                    <Edit2 className="h-4 w-4 text-muted-foreground" />
+                  </Button>
+                </>
+              )}
+            </div>
             <DialogDescription>{selectedSupermarket && formatCNPJ(selectedSupermarket.cnpj)}</DialogDescription>
           </DialogHeader>
           {selectedSupermarket?.address && <p className="text-sm text-muted-foreground flex items-center gap-1"><MapPin className="h-3 w-3" />{selectedSupermarket.address}</p>}
