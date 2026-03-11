@@ -2,6 +2,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
 import { BottomNav } from "./BottomNav";
 import { Outlet } from "react-router-dom";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 export function AppLayout() {
   return (
@@ -17,6 +18,9 @@ export function AppLayout() {
             <h2 className="text-lg font-semibold text-foreground md:hidden">
               CupomSmart
             </h2>
+            <div className="ml-auto">
+              <ThemeToggle />
+            </div>
           </header>
 
           <main className="flex-1 overflow-auto p-4 md:p-6 pb-20 md:pb-6">
