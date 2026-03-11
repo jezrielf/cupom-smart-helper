@@ -24,11 +24,12 @@ const FREQUENCY_OPTIONS = [
   { value: "90", label: "Trimestral" },
 ];
 
-function OnlinePriceBadge({ localPrice, onlinePrice, onlineUrl, onlineUpdatedAt, onRefresh, isRefreshing }: {
+function PriceLine({ label, localPrice, onlinePrice, onlineUrl, updatedAt, onRefresh, isRefreshing }: {
+  label: string;
   localPrice: number;
   onlinePrice: number | null;
   onlineUrl: string | null;
-  onlineUpdatedAt: string | null;
+  updatedAt: string | null;
   onRefresh: () => void;
   isRefreshing: boolean;
 }) {
@@ -36,26 +37,25 @@ function OnlinePriceBadge({ localPrice, onlinePrice, onlineUrl, onlineUpdatedAt,
     const diff = ((onlinePrice - localPrice) / localPrice) * 100;
     const isCheaper = diff < 0;
     return (
-      <div className="flex flex-col gap-0.5">
-        <div className="flex items-center gap-1.5">
-          {onlineUrl ? (
-            <a href={onlineUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-foreground hover:underline flex items-center gap-0.5">
-              {formatBRL(onlinePrice)}
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          ) : (
-            <span className="text-xs font-medium text-foreground">{formatBRL(onlinePrice)}</span>
-          )}
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${isCheaper ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" : "bg-red-500/15 text-red-600 dark:text-red-400"}`}>
-            {isCheaper ? "" : "+"}{diff.toFixed(0)}%
-          </span>
-          <button onClick={onRefresh} disabled={isRefreshing} className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
-            {isRefreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-          </button>
-        </div>
-        {onlineUpdatedAt && (
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] text-muted-foreground font-medium w-6">{label}</span>
+        {onlineUrl ? (
+          <a href={onlineUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-foreground hover:underline flex items-center gap-0.5">
+            {formatBRL(onlinePrice)}
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        ) : (
+          <span className="text-xs font-medium text-foreground">{formatBRL(onlinePrice)}</span>
+        )}
+        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${isCheaper ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" : "bg-red-500/15 text-red-600 dark:text-red-400"}`}>
+          {isCheaper ? "" : "+"}{diff.toFixed(0)}%
+        </span>
+        <button onClick={onRefresh} disabled={isRefreshing} className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+          {isRefreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+        </button>
+        {updatedAt && (
           <span className="text-[10px] text-muted-foreground">
-            {formatDistanceToNow(new Date(onlineUpdatedAt), { addSuffix: true, locale: ptBR })}
+            {formatDistanceToNow(new Date(updatedAt), { addSuffix: true, locale: ptBR })}
           </span>
         )}
       </div>
@@ -63,10 +63,45 @@ function OnlinePriceBadge({ localPrice, onlinePrice, onlineUrl, onlineUpdatedAt,
   }
 
   return (
-    <button onClick={onRefresh} disabled={isRefreshing} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors disabled:opacity-50">
-      {isRefreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-      <span>Buscar</span>
-    </button>
+    <div className="flex items-center gap-1.5">
+      <span className="text-[10px] text-muted-foreground font-medium w-6">{label}</span>
+      <button onClick={onRefresh} disabled={isRefreshing} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors disabled:opacity-50">
+        {isRefreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+        <span>Buscar</span>
+      </button>
+    </div>
+  );
+}
+
+function OnlinePriceBadge({ localPrice, entry, onRefreshAmazon, onRefreshML, isRefreshingAmazon, isRefreshingML }: {
+  localPrice: number;
+  entry: any;
+  onRefreshAmazon: () => void;
+  onRefreshML: () => void;
+  isRefreshingAmazon: boolean;
+  isRefreshingML: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <PriceLine
+        label="AMZ"
+        localPrice={localPrice}
+        onlinePrice={entry?.online_price ? Number(entry.online_price) : null}
+        onlineUrl={entry?.online_url ?? null}
+        updatedAt={entry?.online_updated_at ?? null}
+        onRefresh={onRefreshAmazon}
+        isRefreshing={isRefreshingAmazon}
+      />
+      <PriceLine
+        label="ML"
+        localPrice={localPrice}
+        onlinePrice={entry?.ml_price ? Number(entry.ml_price) : null}
+        onlineUrl={entry?.ml_url ?? null}
+        updatedAt={entry?.ml_updated_at ?? null}
+        onRefresh={onRefreshML}
+        isRefreshing={isRefreshingML}
+      />
+    </div>
   );
 }
 
@@ -74,7 +109,8 @@ export default function ProductCatalog() {
   const { user } = useAuth();
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
-  const [refreshingProducts, setRefreshingProducts] = useState<Set<string>>(new Set());
+  const [refreshingAmazon, setRefreshingAmazon] = useState<Set<string>>(new Set());
+  const [refreshingML, setRefreshingML] = useState<Set<string>>(new Set());
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; currentProduct: string } | null>(null);
 
   const { data: products, isLoading } = useQuery({
@@ -96,7 +132,7 @@ export default function ProductCatalog() {
     queryFn: async () => {
       const { data } = await supabase
         .from("product_catalog")
-        .select("canonical_name, purchase_frequency_days, online_price, online_url, online_updated_at");
+        .select("canonical_name, purchase_frequency_days, online_price, online_url, online_updated_at, ml_price, ml_url, ml_updated_at");
       return data ?? [];
     },
   });
@@ -145,14 +181,13 @@ export default function ProductCatalog() {
   });
 
   const handleRefreshOnlinePrice = async (normalizedName: string) => {
-    setRefreshingProducts((prev) => new Set(prev).add(normalizedName));
+    setRefreshingAmazon((prev) => new Set(prev).add(normalizedName));
     try {
       const { data, error } = await supabase.functions.invoke("search-amazon", {
         body: { product_name: normalizedName },
       });
 
       if (error || !data?.success || !data.results?.length) {
-        toast.error("Nenhum resultado encontrado online");
         return;
       }
 
@@ -177,11 +212,53 @@ export default function ProductCatalog() {
       }
 
       qc.invalidateQueries({ queryKey: ["product-catalog-freq"] });
-      toast.success("Preço online atualizado");
     } catch {
-      toast.error("Erro ao buscar preço online");
+      toast.error("Erro ao buscar preço Amazon");
     } finally {
-      setRefreshingProducts((prev) => {
+      setRefreshingAmazon((prev) => {
+        const next = new Set(prev);
+        next.delete(normalizedName);
+        return next;
+      });
+    }
+  };
+
+  const handleRefreshMLPrice = async (normalizedName: string) => {
+    setRefreshingML((prev) => new Set(prev).add(normalizedName));
+    try {
+      const { data, error } = await supabase.functions.invoke("search-mercadolivre", {
+        body: { product_name: normalizedName },
+      });
+
+      if (error || !data?.success || !data.results?.length) {
+        return;
+      }
+
+      const cheapest = data.results.reduce((min: any, r: any) => (r.price < min.price ? r : min), data.results[0]);
+
+      const { data: existing } = await supabase
+        .from("product_catalog")
+        .select("id")
+        .eq("canonical_name", normalizedName)
+        .maybeSingle();
+
+      const mlData = {
+        ml_price: cheapest.price,
+        ml_url: cheapest.url || data.search_url,
+        ml_updated_at: new Date().toISOString(),
+      };
+
+      if (existing) {
+        await supabase.from("product_catalog").update(mlData).eq("id", existing.id);
+      } else {
+        await supabase.from("product_catalog").insert({ canonical_name: normalizedName, ...mlData });
+      }
+
+      qc.invalidateQueries({ queryKey: ["product-catalog-freq"] });
+    } catch {
+      toast.error("Erro ao buscar preço Mercado Livre");
+    } finally {
+      setRefreshingML((prev) => {
         const next = new Set(prev);
         next.delete(normalizedName);
         return next;
@@ -198,6 +275,8 @@ export default function ProductCatalog() {
       setBulkProgress({ current: i, total: uniqueNames.length, currentProduct: uniqueNames[i] });
       try {
         await handleRefreshOnlinePrice(uniqueNames[i]);
+        await new Promise((r) => setTimeout(r, 1000));
+        await handleRefreshMLPrice(uniqueNames[i]);
         successCount++;
       } catch {}
       if (i < uniqueNames.length - 1) await new Promise((r) => setTimeout(r, 1500));
@@ -283,16 +362,14 @@ export default function ProductCatalog() {
                     <span>{formatProductDetail(Number(p.quantity), p.unit, Number(p.unit_price))}</span>
                     <span className="font-medium text-foreground">{formatBRL(Number(p.total_price))}</span>
                   </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <OnlinePriceBadge
-                      localPrice={Number(p.unit_price)}
-                      onlinePrice={entry?.online_price ? Number(entry.online_price) : null}
-                      onlineUrl={entry?.online_url ?? null}
-                      onlineUpdatedAt={entry?.online_updated_at ?? null}
-                      onRefresh={() => handleRefreshOnlinePrice(p.product_name_normalized)}
-                      isRefreshing={refreshingProducts.has(p.product_name_normalized)}
-                    />
-                  </div>
+                  <OnlinePriceBadge
+                    localPrice={Number(p.unit_price)}
+                    entry={entry}
+                    onRefreshAmazon={() => handleRefreshOnlinePrice(p.product_name_normalized)}
+                    onRefreshML={() => handleRefreshMLPrice(p.product_name_normalized)}
+                    isRefreshingAmazon={refreshingAmazon.has(p.product_name_normalized)}
+                    isRefreshingML={refreshingML.has(p.product_name_normalized)}
+                  />
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs text-muted-foreground truncate max-w-[120px]">{smName}</span>
                     <Select
@@ -327,7 +404,7 @@ export default function ProductCatalog() {
                   <TableHead>Qtd / Unid.</TableHead>
                   <TableHead className="text-right">Preço Unit.</TableHead>
                   <TableHead className="text-right">Total</TableHead>
-                  <TableHead>Online</TableHead>
+                  <TableHead>Online (AMZ / ML)</TableHead>
                   <TableHead>Supermercado</TableHead>
                   <TableHead className="w-36">
                     <RefreshCw className="h-3 w-3 inline mr-1" />Recorrência
@@ -361,11 +438,11 @@ export default function ProductCatalog() {
                       <TableCell>
                         <OnlinePriceBadge
                           localPrice={Number(p.unit_price)}
-                          onlinePrice={entry?.online_price ? Number(entry.online_price) : null}
-                          onlineUrl={entry?.online_url ?? null}
-                          onlineUpdatedAt={entry?.online_updated_at ?? null}
-                          onRefresh={() => handleRefreshOnlinePrice(p.product_name_normalized)}
-                          isRefreshing={refreshingProducts.has(p.product_name_normalized)}
+                          entry={entry}
+                          onRefreshAmazon={() => handleRefreshOnlinePrice(p.product_name_normalized)}
+                          onRefreshML={() => handleRefreshMLPrice(p.product_name_normalized)}
+                          isRefreshingAmazon={refreshingAmazon.has(p.product_name_normalized)}
+                          isRefreshingML={refreshingML.has(p.product_name_normalized)}
                         />
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">
