@@ -3,12 +3,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Package, Search, RefreshCw } from "lucide-react";
-import { format } from "date-fns";
+import { Package, Search, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
+import { format, formatDistanceToNow } from "date-fns";
+import { ptBR } from "date-fns/locale";
 import { formatProductDetail } from "@/lib/formatUnit";
 import { toast } from "sonner";
 
@@ -22,10 +22,57 @@ const FREQUENCY_OPTIONS = [
   { value: "90", label: "Trimestral" },
 ];
 
+function OnlinePriceBadge({ localPrice, onlinePrice, onlineUrl, onlineUpdatedAt, onRefresh, isRefreshing }: {
+  localPrice: number;
+  onlinePrice: number | null;
+  onlineUrl: string | null;
+  onlineUpdatedAt: string | null;
+  onRefresh: () => void;
+  isRefreshing: boolean;
+}) {
+  if (onlinePrice && onlinePrice > 0) {
+    const diff = ((onlinePrice - localPrice) / localPrice) * 100;
+    const isCheaper = diff < 0;
+    return (
+      <div className="flex flex-col gap-0.5">
+        <div className="flex items-center gap-1.5">
+          {onlineUrl ? (
+            <a href={onlineUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-foreground hover:underline flex items-center gap-0.5">
+              {formatBRL(onlinePrice)}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          ) : (
+            <span className="text-xs font-medium text-foreground">{formatBRL(onlinePrice)}</span>
+          )}
+          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${isCheaper ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" : "bg-red-500/15 text-red-600 dark:text-red-400"}`}>
+            {isCheaper ? "" : "+"}{diff.toFixed(0)}%
+          </span>
+          <button onClick={onRefresh} disabled={isRefreshing} className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+            {isRefreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          </button>
+        </div>
+        {onlineUpdatedAt && (
+          <span className="text-[10px] text-muted-foreground">
+            {formatDistanceToNow(new Date(onlineUpdatedAt), { addSuffix: true, locale: ptBR })}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <button onClick={onRefresh} disabled={isRefreshing} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors disabled:opacity-50">
+      {isRefreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+      <span>Buscar</span>
+    </button>
+  );
+}
+
 export default function ProductCatalog() {
   const { user } = useAuth();
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
+  const [refreshingProducts, setRefreshingProducts] = useState<Set<string>>(new Set());
 
   const { data: products, isLoading } = useQuery({
     queryKey: ["user-products", user?.id],
@@ -46,14 +93,13 @@ export default function ProductCatalog() {
     queryFn: async () => {
       const { data } = await supabase
         .from("product_catalog")
-        .select("canonical_name, purchase_frequency_days");
+        .select("canonical_name, purchase_frequency_days, online_price, online_url, online_updated_at");
       return data ?? [];
     },
   });
 
   const freqMut = useMutation({
     mutationFn: async ({ name, days }: { name: string; days: number | null }) => {
-      // Calculate avg_price and last_purchased_at from user's products
       const { data: userProducts } = await supabase
         .from("products")
         .select("unit_price, purchase_date")
@@ -81,15 +127,10 @@ export default function ProductCatalog() {
         .maybeSingle();
 
       if (existing) {
-        const { error } = await supabase
-          .from("product_catalog")
-          .update(upsertData)
-          .eq("id", existing.id);
+        const { error } = await supabase.from("product_catalog").update(upsertData).eq("id", existing.id);
         if (error) throw error;
       } else {
-        const { error } = await supabase
-          .from("product_catalog")
-          .insert(upsertData);
+        const { error } = await supabase.from("product_catalog").insert(upsertData);
         if (error) throw error;
       }
     },
@@ -100,8 +141,54 @@ export default function ProductCatalog() {
     },
   });
 
+  const handleRefreshOnlinePrice = async (normalizedName: string) => {
+    setRefreshingProducts((prev) => new Set(prev).add(normalizedName));
+    try {
+      const { data, error } = await supabase.functions.invoke("search-amazon", {
+        body: { product_name: normalizedName },
+      });
+
+      if (error || !data?.success || !data.results?.length) {
+        toast.error("Nenhum resultado encontrado online");
+        return;
+      }
+
+      const cheapest = data.results.reduce((min: any, r: any) => (r.price < min.price ? r : min), data.results[0]);
+
+      const { data: existing } = await supabase
+        .from("product_catalog")
+        .select("id")
+        .eq("canonical_name", normalizedName)
+        .maybeSingle();
+
+      const onlineData = {
+        online_price: cheapest.price,
+        online_url: cheapest.url || data.search_url,
+        online_updated_at: new Date().toISOString(),
+      };
+
+      if (existing) {
+        await supabase.from("product_catalog").update(onlineData).eq("id", existing.id);
+      } else {
+        await supabase.from("product_catalog").insert({ canonical_name: normalizedName, ...onlineData });
+      }
+
+      qc.invalidateQueries({ queryKey: ["product-catalog-freq"] });
+      toast.success("Preço online atualizado");
+    } catch {
+      toast.error("Erro ao buscar preço online");
+    } finally {
+      setRefreshingProducts((prev) => {
+        const next = new Set(prev);
+        next.delete(normalizedName);
+        return next;
+      });
+    }
+  };
+
+  const getCatalogEntry = (normalizedName: string) => catalog?.find((c) => c.canonical_name === normalizedName);
   const getFrequency = (normalizedName: string): string => {
-    const entry = catalog?.find((c) => c.canonical_name === normalizedName);
+    const entry = getCatalogEntry(normalizedName);
     return entry?.purchase_frequency_days ? String(entry.purchase_frequency_days) : "none";
   };
 
@@ -141,6 +228,7 @@ export default function ProductCatalog() {
           <div className="space-y-3 md:hidden">
             {filtered.map((p) => {
               const smName = (p.supermarkets as any)?.trade_name || (p.supermarkets as any)?.name || "—";
+              const entry = getCatalogEntry(p.product_name_normalized);
               return (
                 <div key={p.id} className="rounded-lg border border-border bg-card p-3 space-y-2">
                   <div className="flex items-start justify-between gap-2">
@@ -154,14 +242,21 @@ export default function ProductCatalog() {
                     <span className="font-medium text-foreground">{formatBRL(Number(p.total_price))}</span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
+                    <OnlinePriceBadge
+                      localPrice={Number(p.unit_price)}
+                      onlinePrice={entry?.online_price ? Number(entry.online_price) : null}
+                      onlineUrl={entry?.online_url ?? null}
+                      onlineUpdatedAt={entry?.online_updated_at ?? null}
+                      onRefresh={() => handleRefreshOnlinePrice(p.product_name_normalized)}
+                      isRefreshing={refreshingProducts.has(p.product_name_normalized)}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-xs text-muted-foreground truncate max-w-[120px]">{smName}</span>
                     <Select
                       value={getFrequency(p.product_name_normalized)}
                       onValueChange={(v) =>
-                        freqMut.mutate({
-                          name: p.product_name_normalized,
-                          days: v === "none" ? null : Number(v),
-                        })
+                        freqMut.mutate({ name: p.product_name_normalized, days: v === "none" ? null : Number(v) })
                       }
                     >
                       <SelectTrigger className="h-7 text-xs w-28">
@@ -190,6 +285,7 @@ export default function ProductCatalog() {
                   <TableHead>Qtd / Unid.</TableHead>
                   <TableHead className="text-right">Preço Unit.</TableHead>
                   <TableHead className="text-right">Total</TableHead>
+                  <TableHead>Online</TableHead>
                   <TableHead>Supermercado</TableHead>
                   <TableHead className="w-36">
                     <RefreshCw className="h-3 w-3 inline mr-1" />Recorrência
@@ -199,6 +295,7 @@ export default function ProductCatalog() {
               <TableBody>
                 {filtered.map((p) => {
                   const smName = (p.supermarkets as any)?.trade_name || (p.supermarkets as any)?.name || "—";
+                  const entry = getCatalogEntry(p.product_name_normalized);
                   return (
                     <TableRow key={p.id}>
                       <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
@@ -219,6 +316,16 @@ export default function ProductCatalog() {
                       <TableCell className="text-right text-xs font-medium text-foreground">
                         {formatBRL(Number(p.total_price))}
                       </TableCell>
+                      <TableCell>
+                        <OnlinePriceBadge
+                          localPrice={Number(p.unit_price)}
+                          onlinePrice={entry?.online_price ? Number(entry.online_price) : null}
+                          onlineUrl={entry?.online_url ?? null}
+                          onlineUpdatedAt={entry?.online_updated_at ?? null}
+                          onRefresh={() => handleRefreshOnlinePrice(p.product_name_normalized)}
+                          isRefreshing={refreshingProducts.has(p.product_name_normalized)}
+                        />
+                      </TableCell>
                       <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">
                         {smName}
                       </TableCell>
@@ -226,10 +333,7 @@ export default function ProductCatalog() {
                         <Select
                           value={getFrequency(p.product_name_normalized)}
                           onValueChange={(v) =>
-                            freqMut.mutate({
-                              name: p.product_name_normalized,
-                              days: v === "none" ? null : Number(v),
-                            })
+                            freqMut.mutate({ name: p.product_name_normalized, days: v === "none" ? null : Number(v) })
                           }
                         >
                           <SelectTrigger className="h-7 text-xs w-28">
