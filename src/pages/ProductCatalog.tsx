@@ -448,10 +448,8 @@ export default function ProductCatalog() {
                           entry={entry}
                           onRefreshAmazon={() => handleRefreshOnlinePrice(p.product_name_normalized)}
                           onRefreshML={() => handleRefreshMLPrice(p.product_name_normalized)}
-                          onRefreshIfood={() => handleRefreshIfoodPrice(p.product_name_normalized)}
                           isRefreshingAmazon={refreshingAmazon.has(p.product_name_normalized)}
                           isRefreshingML={refreshingML.has(p.product_name_normalized)}
-                          isRefreshingIfood={refreshingIfood.has(p.product_name_normalized)}
                         />
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">

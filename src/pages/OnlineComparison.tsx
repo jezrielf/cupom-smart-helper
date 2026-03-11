@@ -235,13 +235,11 @@ function ComparisonTabs({
   localPrice,
   amazonState,
   mlState,
-  ifoodState,
 }: {
   productName: string;
   localPrice: number | null;
   amazonState?: ComparisonState;
   mlState?: ComparisonState;
-  ifoodState?: ComparisonState;
 }) {
   return (
     <Tabs defaultValue="amazon" className="mt-3">
@@ -252,18 +250,12 @@ function ComparisonTabs({
         <TabsTrigger value="ml" className="text-xs px-3 py-1">
           Mercado Livre {mlState?.results?.length ? `(${mlState.results.length})` : ""}
         </TabsTrigger>
-        <TabsTrigger value="ifood" className="text-xs px-3 py-1">
-          iFood {ifoodState?.results?.length ? `(${ifoodState.results.length})` : ""}
-        </TabsTrigger>
       </TabsList>
       <TabsContent value="amazon">
         <SourceResults localPrice={localPrice} state={amazonState} sourceName="Amazon" />
       </TabsContent>
       <TabsContent value="ml">
         <SourceResults localPrice={localPrice} state={mlState} sourceName="Mercado Livre" />
-      </TabsContent>
-      <TabsContent value="ifood">
-        <SourceResults localPrice={localPrice} state={ifoodState} sourceName="iFood" />
       </TabsContent>
     </Tabs>
   );
