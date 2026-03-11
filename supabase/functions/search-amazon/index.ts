@@ -25,13 +25,11 @@ function parseMarkdownResults(markdown: string): AmazonProduct[] {
 
   let currentTitle = '';
   for (const line of lines) {
-    // Look for product titles (usually in brackets or bold)
     const titleMatch = line.match(/\[([^\]]{10,})\]\((https:\/\/www\.amazon\.com\.br\/[^\s)]+)\)/);
     if (titleMatch) {
       currentTitle = titleMatch[1].trim();
       const url = titleMatch[2];
 
-      // Look for price in nearby lines
       const priceRegex = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/;
       const idx = lines.indexOf(line);
       for (let i = idx; i < Math.min(idx + 8, lines.length); i++) {
@@ -81,11 +79,11 @@ Deno.serve(async (req) => {
 
     console.log('Scraping Amazon URL:', amazonUrl);
 
-    // Try JSON extraction first
     let results: AmazonProduct[] = [];
 
+    // Try extract format first
     try {
-      const jsonResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      const extractResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
@@ -93,8 +91,8 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({
           url: amazonUrl,
-          formats: [{
-            type: 'json',
+          formats: ['extract'],
+          extract: {
             schema: {
               type: 'object',
               properties: {
@@ -114,15 +112,19 @@ Deno.serve(async (req) => {
               required: ['products'],
             },
             prompt: 'Extract the first 5 product results with their title, price in BRL as a number, and product URL. Only include items with a valid price.',
-          }],
-          waitFor: 3000,
+          },
+          waitFor: 5000,
         }),
       });
 
-      const jsonData = await jsonResponse.json();
-      console.log('Firecrawl JSON response status:', jsonResponse.status);
+      const extractData = await extractResponse.json();
+      console.log('Firecrawl extract response status:', extractResponse.status);
 
-      const extracted = jsonData?.data?.json || jsonData?.json;
+      if (!extractResponse.ok) {
+        console.error('Firecrawl extract error body:', JSON.stringify(extractData));
+      }
+
+      const extracted = extractData?.data?.extract || extractData?.extract;
       if (extracted?.products && Array.isArray(extracted.products)) {
         results = extracted.products
           .filter((p: any) => p.title && typeof p.price === 'number' && p.price > 0)
@@ -134,7 +136,7 @@ Deno.serve(async (req) => {
           }));
       }
     } catch (e) {
-      console.error('JSON extraction failed, trying markdown fallback:', e);
+      console.error('Extract failed, trying markdown fallback:', e);
     }
 
     // Fallback: markdown extraction
@@ -149,7 +151,7 @@ Deno.serve(async (req) => {
           body: JSON.stringify({
             url: amazonUrl,
             formats: ['markdown'],
-            waitFor: 3000,
+            waitFor: 5000,
           }),
         });
 

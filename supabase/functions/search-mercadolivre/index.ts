@@ -25,23 +25,33 @@ function parseMarkdownResults(markdown: string): MLProduct[] {
 
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li];
-    // ML links typically look like [Product Title](https://www.mercadolivre.com.br/...)
-    const titleMatch = line.match(/\[([^\]]{5,})\]\((https:\/\/[^\s)]*mercadolivre[^\s)]+)\)/);
+
+    // Pattern 1: ML links [Title](url)
+    const titleMatch = line.match(/\[([^\]]{5,})\]\((https?:\/\/[^\s)]*mercadolivre[^\s)]+)\)/);
     if (titleMatch) {
       const title = titleMatch[1].trim();
       const url = titleMatch[2];
 
-      // Search nearby lines for price
-      const priceRegex = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/;
-      for (let j = li; j < Math.min(li + 8, lines.length); j++) {
-        const priceMatch = lines[j].match(priceRegex);
-        if (priceMatch) {
-          const priceStr = priceMatch[1].replace(/\./g, '').replace(',', '.');
-          const price = parseFloat(priceStr);
-          if (!isNaN(price) && price > 0 && price < 10000) {
-            results.push({ title, price, url });
-            break;
+      const price = findPriceNearby(lines, li);
+      if (price > 0) {
+        results.push({ title, price, url });
+      }
+    }
+
+    // Pattern 2: Bold titles **Title** or ### Title without links
+    if (results.length < 5 && !titleMatch) {
+      const boldMatch = line.match(/^(?:\*\*|###?\s)(.{10,})(?:\*\*)?$/);
+      if (boldMatch) {
+        const title = boldMatch[1].replace(/\*\*/g, '').trim();
+        const price = findPriceNearby(lines, li);
+        if (price > 0) {
+          // Try to find a URL nearby
+          let url = '';
+          for (let j = Math.max(0, li - 3); j < Math.min(li + 5, lines.length); j++) {
+            const urlMatch = lines[j].match(/\((https?:\/\/[^\s)]*mercadolivre[^\s)]+)\)/);
+            if (urlMatch) { url = urlMatch[1]; break; }
           }
+          results.push({ title, price, url });
         }
       }
     }
@@ -50,6 +60,26 @@ function parseMarkdownResults(markdown: string): MLProduct[] {
   }
 
   return results;
+}
+
+function findPriceNearby(lines: string[], idx: number): number {
+  // R$ 12,50 or R$ 1.234,56
+  const priceRegex = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/;
+  // Also match plain numbers that look like prices: "1250" (centavos) or "12.50"
+  const plainPriceRegex = /(?:^|\s)(\d{1,5}[.,]\d{2})(?:\s|$)/;
+
+  for (let j = idx; j < Math.min(idx + 8, lines.length); j++) {
+    const priceMatch = lines[j].match(priceRegex);
+    if (priceMatch) {
+      const priceStr = priceMatch[1].replace(/\./g, '').replace(',', '.');
+      const price = parseFloat(priceStr);
+      if (!isNaN(price) && price > 0 && price < 10000) {
+        return price;
+      }
+    }
+  }
+
+  return 0;
 }
 
 Deno.serve(async (req) => {
@@ -82,9 +112,9 @@ Deno.serve(async (req) => {
 
     let results: MLProduct[] = [];
 
-    // Try JSON extraction first
+    // Try extract format first
     try {
-      const jsonResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      const extractResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
@@ -92,8 +122,8 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({
           url: mlUrl,
-          formats: [{
-            type: 'json',
+          formats: ['extract'],
+          extract: {
             schema: {
               type: 'object',
               properties: {
@@ -113,15 +143,19 @@ Deno.serve(async (req) => {
               required: ['products'],
             },
             prompt: 'Extract the first 5 product results with their title, price in BRL as a number, and product URL. Only include items with a valid price.',
-          }],
-          waitFor: 3000,
+          },
+          waitFor: 5000,
         }),
       });
 
-      const jsonData = await jsonResponse.json();
-      console.log('Firecrawl JSON response status:', jsonResponse.status);
+      const extractData = await extractResponse.json();
+      console.log('Firecrawl extract response status:', extractResponse.status);
 
-      const extracted = jsonData?.data?.json || jsonData?.json;
+      if (!extractResponse.ok) {
+        console.error('Firecrawl extract error body:', JSON.stringify(extractData));
+      }
+
+      const extracted = extractData?.data?.extract || extractData?.extract;
       if (extracted?.products && Array.isArray(extracted.products)) {
         results = extracted.products
           .filter((p: any) => p.title && typeof p.price === 'number' && p.price > 0)
@@ -133,7 +167,7 @@ Deno.serve(async (req) => {
           }));
       }
     } catch (e) {
-      console.error('JSON extraction failed, trying markdown fallback:', e);
+      console.error('Extract failed, trying markdown fallback:', e);
     }
 
     // Fallback: markdown extraction
@@ -148,7 +182,7 @@ Deno.serve(async (req) => {
           body: JSON.stringify({
             url: mlUrl,
             formats: ['markdown'],
-            waitFor: 3000,
+            waitFor: 5000,
           }),
         });
 
