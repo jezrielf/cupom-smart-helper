@@ -26,7 +26,7 @@ interface ComparisonState {
   error?: string;
 }
 
-type Source = "amazon" | "ml" | "ifood";
+type Source = "amazon" | "ml";
 
 export default function OnlineComparison() {
   const { user } = useAuth();
