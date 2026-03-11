@@ -213,13 +213,12 @@ export default function OnlineComparison() {
                   </div>
                 </div>
 
-                {(amazonState || mlState || ifoodState) && (
+                {(amazonState || mlState) && (
                   <ComparisonTabs
                     productName={product.canonical_name}
                     localPrice={product.avg_price}
                     amazonState={amazonState}
                     mlState={mlState}
-                    ifoodState={ifoodState}
                   />
                 )}
               </CardContent>
