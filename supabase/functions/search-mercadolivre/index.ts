@@ -3,14 +3,65 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+const ABBREVIATION_MAP: Record<string, string> = {
+  'mac': 'macarrao',
+  'cr': 'creme',
+  'tom': 'tomate',
+  'espag': 'espaguete',
+  'sta': 'santa',
+  'abs': 'absorvente',
+  'ext': 'extrato',
+  'liq': 'liquido',
+  'desod': 'desodorante',
+  'sab': 'sabonete',
+  'det': 'detergente',
+  'amac': 'amaciante',
+  'cond': 'condicionador',
+  'shamp': 'shampoo',
+  'bisc': 'biscoito',
+  'choc': 'chocolate',
+  'marg': 'margarina',
+  'refrig': 'refrigerante',
+  'integ': 'integral',
+  'trad': 'tradicional',
+};
+
+// Packaging/unit codes to remove
+const PACKAGING_CODES = /\b(pc|pt|gl|fr|sc|tp|gr|cx|fd|bd|lt|un|dp|tb|env|fl|sq|pct|gar|sac)\b/g;
+
+// Weight/volume patterns like 500G, 1KG, 900ML, 200G, 1L, 1.5L
+const WEIGHT_VOLUME = /\b\d+([.,]\d+)?\s*(g|kg|ml|l|un|cm|mm)\b/g;
+
+// Size/variant codes like T1, N8, LT1, N5
+const SIZE_CODES = /\b[a-z]?\d{1,2}\b/g;
+
 function normalizeForSearch(name: string): string {
-  return name
+  let normalized = name
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9\s]/g, '')
-    .trim()
-    .replace(/\s+/g, '-');
+    .replace(/[\u0300-\u036f]/g, '');
+
+  // Remove weight/volume first (before other patterns consume digits)
+  normalized = normalized.replace(WEIGHT_VOLUME, ' ');
+
+  // Remove packaging codes
+  normalized = normalized.replace(PACKAGING_CODES, ' ');
+
+  // Remove size codes (single letter + 1-2 digits)
+  normalized = normalized.replace(SIZE_CODES, ' ');
+
+  // Expand abbreviations
+  normalized = normalized.replace(/\b([a-z]+)\b/g, (match) => {
+    return ABBREVIATION_MAP[match] || match;
+  });
+
+  // Remove non-alphanumeric
+  normalized = normalized.replace(/[^a-z0-9\s]/g, '');
+
+  // Collapse whitespace and convert to hyphens
+  normalized = normalized.trim().replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+
+  return normalized;
 }
 
 interface MLProduct {
@@ -45,7 +96,6 @@ function parseMarkdownResults(markdown: string): MLProduct[] {
         const title = boldMatch[1].replace(/\*\*/g, '').trim();
         const price = findPriceNearby(lines, li);
         if (price > 0) {
-          // Try to find a URL nearby
           let url = '';
           for (let j = Math.max(0, li - 3); j < Math.min(li + 5, lines.length); j++) {
             const urlMatch = lines[j].match(/\((https?:\/\/[^\s)]*mercadolivre[^\s)]+)\)/);
@@ -63,10 +113,7 @@ function parseMarkdownResults(markdown: string): MLProduct[] {
 }
 
 function findPriceNearby(lines: string[], idx: number): number {
-  // R$ 12,50 or R$ 1.234,56
   const priceRegex = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/;
-  // Also match plain numbers that look like prices: "1250" (centavos) or "12.50"
-  const plainPriceRegex = /(?:^|\s)(\d{1,5}[.,]\d{2})(?:\s|$)/;
 
   for (let j = idx; j < Math.min(idx + 8, lines.length); j++) {
     const priceMatch = lines[j].match(priceRegex);
@@ -80,6 +127,97 @@ function findPriceNearby(lines: string[], idx: number): number {
   }
 
   return 0;
+}
+
+async function scrapeUrl(apiKey: string, url: string): Promise<{ results: MLProduct[]; searchUrl: string }> {
+  let results: MLProduct[] = [];
+
+  // Try extract format first
+  try {
+    const extractResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        url,
+        formats: ['extract'],
+        extract: {
+          schema: {
+            type: 'object',
+            properties: {
+              products: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    title: { type: 'string', description: 'Product title' },
+                    price: { type: 'number', description: 'Product price in BRL as a number (e.g. 24.50)' },
+                    url: { type: 'string', description: 'Product URL on Mercado Livre' },
+                  },
+                  required: ['title', 'price'],
+                },
+              },
+            },
+            required: ['products'],
+          },
+          prompt: 'Extract the first 5 product results with their title, price in BRL as a number, and product URL. Only include items with a valid price.',
+        },
+        waitFor: 5000,
+      }),
+    });
+
+    const extractData = await extractResponse.json();
+    console.log('Firecrawl extract response status:', extractResponse.status);
+
+    if (!extractResponse.ok) {
+      console.error('Firecrawl extract error body:', JSON.stringify(extractData));
+    }
+
+    const extracted = extractData?.data?.extract || extractData?.extract;
+    if (extracted?.products && Array.isArray(extracted.products)) {
+      results = extracted.products
+        .filter((p: any) => p.title && typeof p.price === 'number' && p.price > 0)
+        .slice(0, 5)
+        .map((p: any) => ({
+          title: p.title,
+          price: p.price,
+          url: p.url || url,
+        }));
+    }
+  } catch (e) {
+    console.error('Extract failed, trying markdown fallback:', e);
+  }
+
+  // Fallback: markdown extraction
+  if (results.length === 0) {
+    try {
+      const mdResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          url,
+          formats: ['markdown'],
+          waitFor: 5000,
+        }),
+      });
+
+      const mdData = await mdResponse.json();
+      const markdown = mdData?.data?.markdown || mdData?.markdown || '';
+
+      if (markdown) {
+        results = parseMarkdownResults(markdown);
+      }
+    } catch (e) {
+      console.error('Markdown fallback also failed:', e);
+    }
+  }
+
+  return { results, searchUrl: url };
 }
 
 Deno.serve(async (req) => {
@@ -106,101 +244,27 @@ Deno.serve(async (req) => {
     }
 
     const normalized = normalizeForSearch(product_name);
-    const mlUrl = `https://lista.mercadolivre.com.br/supermercado/market/${normalized}_OrderId_PRICE_NoIndex_True?sb=storefront_url`;
+    console.log(`Normalized "${product_name}" → "${normalized}"`);
 
+    // Try supermarket-specific URL first
+    const mlUrl = `https://lista.mercadolivre.com.br/supermercado/market/${normalized}_OrderId_PRICE_NoIndex_True?sb=storefront_url`;
     console.log('Scraping Mercado Livre URL:', mlUrl);
 
-    let results: MLProduct[] = [];
+    let { results, searchUrl } = await scrapeUrl(apiKey, mlUrl);
 
-    // Try extract format first
-    try {
-      const extractResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          url: mlUrl,
-          formats: ['extract'],
-          extract: {
-            schema: {
-              type: 'object',
-              properties: {
-                products: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      title: { type: 'string', description: 'Product title' },
-                      price: { type: 'number', description: 'Product price in BRL as a number (e.g. 24.50)' },
-                      url: { type: 'string', description: 'Product URL on Mercado Livre' },
-                    },
-                    required: ['title', 'price'],
-                  },
-                },
-              },
-              required: ['products'],
-            },
-            prompt: 'Extract the first 5 product results with their title, price in BRL as a number, and product URL. Only include items with a valid price.',
-          },
-          waitFor: 5000,
-        }),
-      });
-
-      const extractData = await extractResponse.json();
-      console.log('Firecrawl extract response status:', extractResponse.status);
-
-      if (!extractResponse.ok) {
-        console.error('Firecrawl extract error body:', JSON.stringify(extractData));
-      }
-
-      const extracted = extractData?.data?.extract || extractData?.extract;
-      if (extracted?.products && Array.isArray(extracted.products)) {
-        results = extracted.products
-          .filter((p: any) => p.title && typeof p.price === 'number' && p.price > 0)
-          .slice(0, 5)
-          .map((p: any) => ({
-            title: p.title,
-            price: p.price,
-            url: p.url || mlUrl,
-          }));
-      }
-    } catch (e) {
-      console.error('Extract failed, trying markdown fallback:', e);
-    }
-
-    // Fallback: markdown extraction
+    // Fallback: broader search if supermarket URL returned 0 results
     if (results.length === 0) {
-      try {
-        const mdResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            url: mlUrl,
-            formats: ['markdown'],
-            waitFor: 5000,
-          }),
-        });
-
-        const mdData = await mdResponse.json();
-        const markdown = mdData?.data?.markdown || mdData?.markdown || '';
-
-        if (markdown) {
-          results = parseMarkdownResults(markdown);
-        }
-      } catch (e) {
-        console.error('Markdown fallback also failed:', e);
-      }
+      const broadUrl = `https://lista.mercadolivre.com.br/${normalized}_OrderId_PRICE_NoIndex_True`;
+      console.log('Supermarket URL returned 0 results, trying broad URL:', broadUrl);
+      const broad = await scrapeUrl(apiKey, broadUrl);
+      results = broad.results;
+      searchUrl = broad.searchUrl;
     }
 
     console.log(`Found ${results.length} ML results for "${product_name}"`);
 
     return new Response(
-      JSON.stringify({ success: true, results, search_url: mlUrl }),
+      JSON.stringify({ success: true, results, search_url: searchUrl }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {

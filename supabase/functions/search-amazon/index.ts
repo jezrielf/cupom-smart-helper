@@ -3,14 +3,52 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+const ABBREVIATION_MAP: Record<string, string> = {
+  'mac': 'macarrao',
+  'cr': 'creme',
+  'tom': 'tomate',
+  'espag': 'espaguete',
+  'sta': 'santa',
+  'abs': 'absorvente',
+  'ext': 'extrato',
+  'liq': 'liquido',
+  'desod': 'desodorante',
+  'sab': 'sabonete',
+  'det': 'detergente',
+  'amac': 'amaciante',
+  'cond': 'condicionador',
+  'shamp': 'shampoo',
+  'bisc': 'biscoito',
+  'choc': 'chocolate',
+  'marg': 'margarina',
+  'refrig': 'refrigerante',
+  'integ': 'integral',
+  'trad': 'tradicional',
+};
+
+const PACKAGING_CODES = /\b(pc|pt|gl|fr|sc|tp|gr|cx|fd|bd|lt|un|dp|tb|env|fl|sq|pct|gar|sac)\b/g;
+const WEIGHT_VOLUME = /\b\d+([.,]\d+)?\s*(g|kg|ml|l|un|cm|mm)\b/g;
+const SIZE_CODES = /\b[a-z]?\d{1,2}\b/g;
+
 function normalizeForSearch(name: string): string {
-  return name
+  let normalized = name
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9\s]/g, '')
-    .trim()
-    .replace(/\s+/g, '+');
+    .replace(/[\u0300-\u036f]/g, '');
+
+  normalized = normalized.replace(WEIGHT_VOLUME, ' ');
+  normalized = normalized.replace(PACKAGING_CODES, ' ');
+  normalized = normalized.replace(SIZE_CODES, ' ');
+
+  normalized = normalized.replace(/\b([a-z]+)\b/g, (match) => {
+    return ABBREVIATION_MAP[match] || match;
+  });
+
+  normalized = normalized.replace(/[^a-z0-9\s]/g, '');
+  normalized = normalized.trim().replace(/\s+/g, '+');
+
+  console.log(`Amazon normalized: "${name}" → "${normalized}"`);
+  return normalized;
 }
 
 interface AmazonProduct {
