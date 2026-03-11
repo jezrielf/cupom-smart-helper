@@ -90,7 +90,6 @@ export default function OnlineComparison() {
     await Promise.all([
       searchSource(productName, "amazon"),
       searchSource(productName, "ml"),
-      searchSource(productName, "ifood"),
     ]);
   };
 
