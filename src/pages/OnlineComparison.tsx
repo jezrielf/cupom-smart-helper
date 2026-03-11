@@ -108,8 +108,8 @@ export default function OnlineComparison() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-foreground">Comparativo Online</h1>
-        <p className="text-muted-foreground text-sm">
-          Compare preços do supermercado com Amazon, Mercado Livre e iFood
+      <p className="text-muted-foreground text-sm">
+          Compare preços do supermercado com Amazon e Mercado Livre
         </p>
       </div>
 
