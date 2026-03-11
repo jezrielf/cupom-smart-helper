@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -73,6 +75,7 @@ export default function ProductCatalog() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [refreshingProducts, setRefreshingProducts] = useState<Set<string>>(new Set());
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; currentProduct: string } | null>(null);
 
   const { data: products, isLoading } = useQuery({
     queryKey: ["user-products", user?.id],
@@ -186,6 +189,23 @@ export default function ProductCatalog() {
     }
   };
 
+  const handleRefreshAll = async () => {
+    const uniqueNames = [...new Set(filtered.map((p) => p.product_name_normalized))];
+    if (uniqueNames.length === 0) return;
+    setBulkProgress({ current: 0, total: uniqueNames.length, currentProduct: uniqueNames[0] });
+    let successCount = 0;
+    for (let i = 0; i < uniqueNames.length; i++) {
+      setBulkProgress({ current: i, total: uniqueNames.length, currentProduct: uniqueNames[i] });
+      try {
+        await handleRefreshOnlinePrice(uniqueNames[i]);
+        successCount++;
+      } catch {}
+      if (i < uniqueNames.length - 1) await new Promise((r) => setTimeout(r, 1500));
+    }
+    setBulkProgress(null);
+    toast.success(`${successCount} de ${uniqueNames.length} preços atualizados`);
+  };
+
   const getCatalogEntry = (normalizedName: string) => catalog?.find((c) => c.canonical_name === normalizedName);
   const getFrequency = (normalizedName: string): string => {
     const entry = getCatalogEntry(normalizedName);
@@ -212,9 +232,31 @@ export default function ProductCatalog() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-foreground">Produtos</h1>
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input placeholder="Buscar produto ou código..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2 max-w-lg">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input placeholder="Buscar produto ou código..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefreshAll}
+            disabled={!!bulkProgress || filtered.length === 0}
+            className="whitespace-nowrap"
+          >
+            {bulkProgress ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+            {bulkProgress ? "Atualizando..." : "Atualizar todos"}
+          </Button>
+        </div>
+        {bulkProgress && (
+          <div className="max-w-lg space-y-1">
+            <Progress value={(bulkProgress.current / bulkProgress.total) * 100} className="h-2" />
+            <p className="text-xs text-muted-foreground truncate">
+              {bulkProgress.current + 1} de {bulkProgress.total} — {bulkProgress.currentProduct}
+            </p>
+          </div>
+        )}
       </div>
 
       {filtered.length === 0 ? (
