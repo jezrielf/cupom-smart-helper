@@ -187,7 +187,12 @@ export default function ProductCatalog() {
         body: { product_name: normalizedName },
       });
 
-      if (error || !data?.success || !data.results?.length) {
+      if (error || !data?.success) {
+        return;
+      }
+
+      if (!data.results?.length) {
+        toast.info(`Nenhum resultado na Amazon para "${normalizedName}"`);
         return;
       }
 
@@ -230,7 +235,12 @@ export default function ProductCatalog() {
         body: { product_name: normalizedName },
       });
 
-      if (error || !data?.success || !data.results?.length) {
+      if (error || !data?.success) {
+        return;
+      }
+
+      if (!data.results?.length) {
+        toast.info(`Nenhum resultado no Mercado Livre para "${normalizedName}"`);
         return;
       }
 
