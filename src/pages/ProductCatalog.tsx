@@ -73,15 +73,13 @@ function PriceLine({ label, localPrice, onlinePrice, onlineUrl, updatedAt, onRef
   );
 }
 
-function OnlinePriceBadge({ localPrice, entry, onRefreshAmazon, onRefreshML, onRefreshIfood, isRefreshingAmazon, isRefreshingML, isRefreshingIfood }: {
+function OnlinePriceBadge({ localPrice, entry, onRefreshAmazon, onRefreshML, isRefreshingAmazon, isRefreshingML }: {
   localPrice: number;
   entry: any;
   onRefreshAmazon: () => void;
   onRefreshML: () => void;
-  onRefreshIfood: () => void;
   isRefreshingAmazon: boolean;
   isRefreshingML: boolean;
-  isRefreshingIfood: boolean;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -102,15 +100,6 @@ function OnlinePriceBadge({ localPrice, entry, onRefreshAmazon, onRefreshML, onR
         updatedAt={entry?.ml_updated_at ?? null}
         onRefresh={onRefreshML}
         isRefreshing={isRefreshingML}
-      />
-      <PriceLine
-        label="iFood"
-        localPrice={localPrice}
-        onlinePrice={entry?.ifood_price ? Number(entry.ifood_price) : null}
-        onlineUrl={entry?.ifood_url ?? null}
-        updatedAt={entry?.ifood_updated_at ?? null}
-        onRefresh={onRefreshIfood}
-        isRefreshing={isRefreshingIfood}
       />
     </div>
   );
