@@ -304,7 +304,8 @@ Deno.serve(async (req) => {
               },
               prompt: "Extraia os dados desta nota fiscal eletrônica (NFC-e) brasileira. Inclua TODOS os produtos listados com nome, código, quantidade, unidade (UN, KG, etc), preço unitário e preço total. O CNPJ deve conter apenas dígitos (sem pontos, barras ou hífens). A data de compra deve estar no formato DD/MM/AAAA HH:MM:SS. A chave de acesso tem 44 dígitos numéricos.",
             },
-            waitFor: 3000,
+            waitFor: 5000,
+            timeout: 30000,
           }),
         });
 
