@@ -241,7 +241,7 @@ Deno.serve(async (req) => {
           { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-      url = `https://nfce.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?p=${cleanKey}`;
+      url = `https://portalsped.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?p=${cleanKey}`;
     }
 
     // Validate URL
