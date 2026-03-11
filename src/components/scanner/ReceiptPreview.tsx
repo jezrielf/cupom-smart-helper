@@ -123,8 +123,7 @@ export function ReceiptPreview({
                     <div className="flex-1 min-w-0 mr-2">
                       <p className="truncate">{product.product_name}</p>
                       <p className="text-xs text-muted-foreground">
-                        {product.quantity} {product.unit} × R${" "}
-                        {product.unit_price.toFixed(2)}
+                        {formatProductDetail(product.quantity, product.unit, product.unit_price)}
                       </p>
                     </div>
                     <p className="font-medium whitespace-nowrap">
