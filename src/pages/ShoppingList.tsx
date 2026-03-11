@@ -239,6 +239,36 @@ export default function ShoppingList() {
     }).length;
   }, [items, catalogMap]);
 
+  // Recurring products not yet in the active list
+  const pendingRecurring = useMemo(() => {
+    if (!catalogData || !activeListId) return [];
+    const existingNames = new Set(items?.map((i) => i.product_name.toLowerCase()) ?? []);
+    return catalogData.filter((c) => {
+      if (!c.purchase_frequency_days) return false;
+      if (existingNames.has(c.canonical_name.toLowerCase())) return false;
+      const nextDate = getNextPurchaseDate(c.last_purchased_at, c.purchase_frequency_days);
+      return isUrgent(nextDate);
+    });
+  }, [catalogData, items, activeListId]);
+
+  const addRecurringItem = useMutation({
+    mutationFn: async (cat: CatalogItem) => {
+      const { error } = await supabase.from("shopping_list_items").insert({
+        shopping_list_id: activeListId!,
+        user_id: user!.id,
+        product_name: cat.canonical_name,
+        quantity: 1,
+        estimated_price: cat.avg_price ? Number(cat.avg_price) : null,
+        priority: "medium",
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shopping-items"] });
+      toast.success("Produto adicionado à lista");
+    },
+  });
+
   if (isLoading) {
     return (
       <div className="space-y-4">
