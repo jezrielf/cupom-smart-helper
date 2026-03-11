@@ -7,6 +7,7 @@ import {
   Package,
   ShoppingCart,
   TrendingUp,
+  Globe,
   LogOut,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
