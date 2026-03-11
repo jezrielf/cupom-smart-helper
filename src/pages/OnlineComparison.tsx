@@ -26,7 +26,7 @@ interface ComparisonState {
   error?: string;
 }
 
-type Source = "amazon" | "ml" | "ifood";
+type Source = "amazon" | "ml";
 
 export default function OnlineComparison() {
   const { user } = useAuth();
@@ -60,7 +60,6 @@ export default function OnlineComparison() {
       const fnMap: Record<Source, string> = {
         amazon: "search-amazon",
         ml: "search-mercadolivre",
-        ifood: "search-ifood",
       };
       const { data, error } = await supabase.functions.invoke(fnMap[source], {
         body: { product_name: productName },
@@ -91,7 +90,6 @@ export default function OnlineComparison() {
     await Promise.all([
       searchSource(productName, "amazon"),
       searchSource(productName, "ml"),
-      searchSource(productName, "ifood"),
     ]);
   };
 
@@ -110,8 +108,8 @@ export default function OnlineComparison() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-foreground">Comparativo Online</h1>
-        <p className="text-muted-foreground text-sm">
-          Compare preços do supermercado com Amazon, Mercado Livre e iFood
+      <p className="text-muted-foreground text-sm">
+          Compare preços do supermercado com Amazon e Mercado Livre
         </p>
       </div>
 
@@ -136,14 +134,13 @@ export default function OnlineComparison() {
           </div>
 
           {/* Free search results */}
-          {(comparisons[key(freeSearch.trim(), "amazon")] || comparisons[key(freeSearch.trim(), "ml")] || comparisons[key(freeSearch.trim(), "ifood")]) && (
+          {(comparisons[key(freeSearch.trim(), "amazon")] || comparisons[key(freeSearch.trim(), "ml")]) && (
             <div className="mt-4">
               <ComparisonTabs
                 productName={freeSearch.trim()}
                 localPrice={null}
                 amazonState={comparisons[key(freeSearch.trim(), "amazon")]}
                 mlState={comparisons[key(freeSearch.trim(), "ml")]}
-                ifoodState={comparisons[key(freeSearch.trim(), "ifood")]}
               />
             </div>
           )}
@@ -183,9 +180,8 @@ export default function OnlineComparison() {
         {filtered?.map((product) => {
           const amazonState = comparisons[key(product.canonical_name, "amazon")];
           const mlState = comparisons[key(product.canonical_name, "ml")];
-          const ifoodState = comparisons[key(product.canonical_name, "ifood")];
-          const isLoading = amazonState?.loading || mlState?.loading || ifoodState?.loading;
-          const hasResults = amazonState?.results?.length || mlState?.results?.length || ifoodState?.results?.length;
+          const isLoading = amazonState?.loading || mlState?.loading;
+          const hasResults = amazonState?.results?.length || mlState?.results?.length;
 
           return (
             <Card key={product.id}>
@@ -217,13 +213,12 @@ export default function OnlineComparison() {
                   </div>
                 </div>
 
-                {(amazonState || mlState || ifoodState) && (
+                {(amazonState || mlState) && (
                   <ComparisonTabs
                     productName={product.canonical_name}
                     localPrice={product.avg_price}
                     amazonState={amazonState}
                     mlState={mlState}
-                    ifoodState={ifoodState}
                   />
                 )}
               </CardContent>
@@ -240,13 +235,11 @@ function ComparisonTabs({
   localPrice,
   amazonState,
   mlState,
-  ifoodState,
 }: {
   productName: string;
   localPrice: number | null;
   amazonState?: ComparisonState;
   mlState?: ComparisonState;
-  ifoodState?: ComparisonState;
 }) {
   return (
     <Tabs defaultValue="amazon" className="mt-3">
@@ -257,18 +250,12 @@ function ComparisonTabs({
         <TabsTrigger value="ml" className="text-xs px-3 py-1">
           Mercado Livre {mlState?.results?.length ? `(${mlState.results.length})` : ""}
         </TabsTrigger>
-        <TabsTrigger value="ifood" className="text-xs px-3 py-1">
-          iFood {ifoodState?.results?.length ? `(${ifoodState.results.length})` : ""}
-        </TabsTrigger>
       </TabsList>
       <TabsContent value="amazon">
         <SourceResults localPrice={localPrice} state={amazonState} sourceName="Amazon" />
       </TabsContent>
       <TabsContent value="ml">
         <SourceResults localPrice={localPrice} state={mlState} sourceName="Mercado Livre" />
-      </TabsContent>
-      <TabsContent value="ifood">
-        <SourceResults localPrice={localPrice} state={ifoodState} sourceName="iFood" />
       </TabsContent>
     </Tabs>
   );

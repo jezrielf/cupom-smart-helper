@@ -73,15 +73,13 @@ function PriceLine({ label, localPrice, onlinePrice, onlineUrl, updatedAt, onRef
   );
 }
 
-function OnlinePriceBadge({ localPrice, entry, onRefreshAmazon, onRefreshML, onRefreshIfood, isRefreshingAmazon, isRefreshingML, isRefreshingIfood }: {
+function OnlinePriceBadge({ localPrice, entry, onRefreshAmazon, onRefreshML, isRefreshingAmazon, isRefreshingML }: {
   localPrice: number;
   entry: any;
   onRefreshAmazon: () => void;
   onRefreshML: () => void;
-  onRefreshIfood: () => void;
   isRefreshingAmazon: boolean;
   isRefreshingML: boolean;
-  isRefreshingIfood: boolean;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -103,15 +101,6 @@ function OnlinePriceBadge({ localPrice, entry, onRefreshAmazon, onRefreshML, onR
         onRefresh={onRefreshML}
         isRefreshing={isRefreshingML}
       />
-      <PriceLine
-        label="iFood"
-        localPrice={localPrice}
-        onlinePrice={entry?.ifood_price ? Number(entry.ifood_price) : null}
-        onlineUrl={entry?.ifood_url ?? null}
-        updatedAt={entry?.ifood_updated_at ?? null}
-        onRefresh={onRefreshIfood}
-        isRefreshing={isRefreshingIfood}
-      />
     </div>
   );
 }
@@ -122,7 +111,7 @@ export default function ProductCatalog() {
   const [search, setSearch] = useState("");
   const [refreshingAmazon, setRefreshingAmazon] = useState<Set<string>>(new Set());
   const [refreshingML, setRefreshingML] = useState<Set<string>>(new Set());
-  const [refreshingIfood, setRefreshingIfood] = useState<Set<string>>(new Set());
+  
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; currentProduct: string } | null>(null);
 
   const { data: products, isLoading } = useQuery({
@@ -144,7 +133,7 @@ export default function ProductCatalog() {
     queryFn: async () => {
       const { data } = await supabase
         .from("product_catalog")
-        .select("canonical_name, purchase_frequency_days, online_price, online_url, online_updated_at, ml_price, ml_url, ml_updated_at, ifood_price, ifood_url, ifood_updated_at");
+        .select("canonical_name, purchase_frequency_days, online_price, online_url, online_updated_at, ml_price, ml_url, ml_updated_at");
       return data ?? [];
     },
   });
@@ -284,52 +273,6 @@ export default function ProductCatalog() {
     }
   };
 
-  const handleRefreshIfoodPrice = async (normalizedName: string) => {
-    setRefreshingIfood((prev) => new Set(prev).add(normalizedName));
-    try {
-      const { data, error } = await supabase.functions.invoke("search-ifood", {
-        body: { product_name: normalizedName },
-      });
-
-      if (error || !data?.success) return;
-
-      if (!data.results?.length) {
-        toast.info(`Nenhum resultado no iFood para "${normalizedName}"`);
-        return;
-      }
-
-      const cheapest = data.results.reduce((min: any, r: any) => (r.price < min.price ? r : min), data.results[0]);
-
-      const { data: existing } = await supabase
-        .from("product_catalog")
-        .select("id")
-        .eq("canonical_name", normalizedName)
-        .maybeSingle();
-
-      const ifoodData = {
-        ifood_price: cheapest.price,
-        ifood_url: cheapest.url || data.search_url,
-        ifood_updated_at: new Date().toISOString(),
-      };
-
-      if (existing) {
-        await supabase.from("product_catalog").update(ifoodData).eq("id", existing.id);
-      } else {
-        await supabase.from("product_catalog").insert({ canonical_name: normalizedName, ...ifoodData });
-      }
-
-      qc.invalidateQueries({ queryKey: ["product-catalog-freq"] });
-    } catch {
-      toast.error("Erro ao buscar preço iFood");
-    } finally {
-      setRefreshingIfood((prev) => {
-        const next = new Set(prev);
-        next.delete(normalizedName);
-        return next;
-      });
-    }
-  };
-
   const handleRefreshAll = async () => {
     const uniqueNames = [...new Set(filtered.map((p) => p.product_name_normalized))];
     if (uniqueNames.length === 0) return;
@@ -341,8 +284,6 @@ export default function ProductCatalog() {
         await handleRefreshOnlinePrice(uniqueNames[i]);
         await new Promise((r) => setTimeout(r, 1000));
         await handleRefreshMLPrice(uniqueNames[i]);
-        await new Promise((r) => setTimeout(r, 1000));
-        await handleRefreshIfoodPrice(uniqueNames[i]);
         successCount++;
       } catch {}
       if (i < uniqueNames.length - 1) await new Promise((r) => setTimeout(r, 1500));
@@ -433,10 +374,8 @@ export default function ProductCatalog() {
                     entry={entry}
                     onRefreshAmazon={() => handleRefreshOnlinePrice(p.product_name_normalized)}
                     onRefreshML={() => handleRefreshMLPrice(p.product_name_normalized)}
-                    onRefreshIfood={() => handleRefreshIfoodPrice(p.product_name_normalized)}
                     isRefreshingAmazon={refreshingAmazon.has(p.product_name_normalized)}
                     isRefreshingML={refreshingML.has(p.product_name_normalized)}
-                    isRefreshingIfood={refreshingIfood.has(p.product_name_normalized)}
                   />
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs text-muted-foreground truncate max-w-[120px]">{smName}</span>
@@ -472,7 +411,7 @@ export default function ProductCatalog() {
                   <TableHead>Qtd / Unid.</TableHead>
                   <TableHead className="text-right">Preço Unit.</TableHead>
                   <TableHead className="text-right">Total</TableHead>
-                  <TableHead>Online (AMZ / ML / iFood)</TableHead>
+                  <TableHead>Online (AMZ / ML)</TableHead>
                   <TableHead>Supermercado</TableHead>
                   <TableHead className="w-36">
                     <RefreshCw className="h-3 w-3 inline mr-1" />Recorrência
@@ -509,10 +448,8 @@ export default function ProductCatalog() {
                           entry={entry}
                           onRefreshAmazon={() => handleRefreshOnlinePrice(p.product_name_normalized)}
                           onRefreshML={() => handleRefreshMLPrice(p.product_name_normalized)}
-                          onRefreshIfood={() => handleRefreshIfoodPrice(p.product_name_normalized)}
                           isRefreshingAmazon={refreshingAmazon.has(p.product_name_normalized)}
                           isRefreshingML={refreshingML.has(p.product_name_normalized)}
-                          isRefreshingIfood={refreshingIfood.has(p.product_name_normalized)}
                         />
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">
