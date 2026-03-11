@@ -17,7 +17,7 @@ import { toast } from "sonner";
 const formatBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const PRIORITY_COLORS: Record<string, string> = { high: "bg-destructive/20 text-destructive", medium: "bg-warning/20 text-warning", low: "bg-muted text-muted-foreground" };
 const PRIORITY_LABELS: Record<string, string> = { high: "Alta", medium: "Média", low: "Baixa" };
-const FREQ_LABELS: Record<number, string> = { 7: "Semanal", 15: "Quinzenal", 30: "Mensal" };
+const FREQ_LABELS: Record<number, string> = { 7: "Semanal", 15: "Quinzenal", 30: "Mensal", 60: "Bimestral", 90: "Trimestral" };
 
 function getNextPurchaseDate(lastPurchased: string | null, freqDays: number): Date {
   if (!lastPurchased) return new Date();
@@ -239,6 +239,36 @@ export default function ShoppingList() {
     }).length;
   }, [items, catalogMap]);
 
+  // Recurring products not yet in the active list
+  const pendingRecurring = useMemo(() => {
+    if (!catalogData || !activeListId) return [];
+    const existingNames = new Set(items?.map((i) => i.product_name.toLowerCase()) ?? []);
+    return catalogData.filter((c) => {
+      if (!c.purchase_frequency_days) return false;
+      if (existingNames.has(c.canonical_name.toLowerCase())) return false;
+      const nextDate = getNextPurchaseDate(c.last_purchased_at, c.purchase_frequency_days);
+      return isUrgent(nextDate);
+    });
+  }, [catalogData, items, activeListId]);
+
+  const addRecurringItem = useMutation({
+    mutationFn: async (cat: CatalogItem) => {
+      const { error } = await supabase.from("shopping_list_items").insert({
+        shopping_list_id: activeListId!,
+        user_id: user!.id,
+        product_name: cat.canonical_name,
+        quantity: 1,
+        estimated_price: cat.avg_price ? Number(cat.avg_price) : null,
+        priority: "medium",
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shopping-items"] });
+      toast.success("Produto adicionado à lista");
+    },
+  });
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -327,6 +357,29 @@ export default function ShoppingList() {
                   </Select>
                   <Button size="icon" onClick={() => newItemName.trim() && addItem.mutate()} disabled={!newItemName.trim()}><Plus className="h-4 w-4" /></Button>
                 </div>
+
+                {pendingRecurring.length > 0 && (
+                  <div className="rounded-lg border border-accent/50 bg-accent/10 p-3 space-y-2">
+                    <p className="text-xs font-medium text-accent-foreground flex items-center gap-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      Produtos recorrentes pendentes
+                    </p>
+                    {pendingRecurring.map((cat) => (
+                      <div key={cat.canonical_name} className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm text-foreground truncate">{cat.canonical_name}</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {cat.avg_price ? formatBRL(Number(cat.avg_price)) : "—"}
+                            {cat.purchase_frequency_days && ` · ${FREQ_LABELS[cat.purchase_frequency_days] ?? `${cat.purchase_frequency_days}d`}`}
+                          </p>
+                        </div>
+                        <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={() => addRecurringItem.mutate(cat)}>
+                          <Plus className="h-3 w-3 mr-1" />Adicionar
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {items?.map((item) => {
                   const cat = getItemCatalog(item.product_name);

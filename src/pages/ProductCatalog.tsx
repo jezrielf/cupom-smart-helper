@@ -53,6 +53,27 @@ export default function ProductCatalog() {
 
   const freqMut = useMutation({
     mutationFn: async ({ name, days }: { name: string; days: number | null }) => {
+      // Calculate avg_price and last_purchased_at from user's products
+      const { data: userProducts } = await supabase
+        .from("products")
+        .select("unit_price, purchase_date")
+        .eq("product_name_normalized", name)
+        .eq("user_id", user!.id);
+
+      const avgPrice = userProducts && userProducts.length > 0
+        ? userProducts.reduce((s, p) => s + Number(p.unit_price), 0) / userProducts.length
+        : null;
+      const lastPurchasedAt = userProducts && userProducts.length > 0
+        ? userProducts.sort((a, b) => new Date(b.purchase_date).getTime() - new Date(a.purchase_date).getTime())[0].purchase_date
+        : null;
+
+      const upsertData = {
+        canonical_name: name,
+        purchase_frequency_days: days,
+        avg_price: avgPrice,
+        last_purchased_at: lastPurchasedAt,
+      };
+
       const { data: existing } = await supabase
         .from("product_catalog")
         .select("id")
@@ -62,13 +83,13 @@ export default function ProductCatalog() {
       if (existing) {
         const { error } = await supabase
           .from("product_catalog")
-          .update({ purchase_frequency_days: days })
+          .update(upsertData)
           .eq("id", existing.id);
         if (error) throw error;
       } else {
         const { error } = await supabase
           .from("product_catalog")
-          .insert({ canonical_name: name, purchase_frequency_days: days });
+          .insert(upsertData);
         if (error) throw error;
       }
     },
