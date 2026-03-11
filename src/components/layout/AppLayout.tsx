@@ -8,13 +8,11 @@ export function AppLayout() {
   return (
     <SidebarProvider>
       <div className="min-h-screen flex w-full">
-        <div className="hidden md:block">
-          <AppSidebar />
-        </div>
+        <AppSidebar />
 
         <div className="flex-1 flex flex-col min-h-screen">
           <header className="sticky top-0 z-40 flex h-14 items-center gap-4 border-b border-border bg-background/80 backdrop-blur-sm px-4 md:px-6">
-            <SidebarTrigger className="hidden md:flex" />
+            <SidebarTrigger />
             <h2 className="text-lg font-semibold text-foreground md:hidden">
               CupomSmart
             </h2>
