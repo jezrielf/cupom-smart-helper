@@ -4,15 +4,16 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, ExternalLink, TrendingDown, TrendingUp, Minus, Globe, ShoppingCart } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Search, ExternalLink, TrendingDown, TrendingUp, Minus, Globe, ShoppingCart, Loader2 } from "lucide-react";
 
 const formatBRL = (v: number) =>
   v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-interface AmazonResult {
+interface OnlineResult {
   title: string;
   price: number;
   url: string;
@@ -20,17 +21,18 @@ interface AmazonResult {
 
 interface ComparisonState {
   loading: boolean;
-  results: AmazonResult[];
+  results: OnlineResult[];
   searchUrl?: string;
   error?: string;
 }
+
+type Source = "amazon" | "ml";
 
 export default function OnlineComparison() {
   const { user } = useAuth();
   const [search, setSearch] = useState("");
   const [comparisons, setComparisons] = useState<Record<string, ComparisonState>>({});
 
-  // Load user products from catalog with avg_price
   const { data: catalog, isLoading: catalogLoading } = useQuery({
     queryKey: ["product-catalog-online", user?.id],
     enabled: !!user,
@@ -45,19 +47,18 @@ export default function OnlineComparison() {
   });
 
   const filtered = catalog?.filter(
-    (p) =>
-      !search ||
-      p.canonical_name.toLowerCase().includes(search.toLowerCase())
+    (p) => !search || p.canonical_name.toLowerCase().includes(search.toLowerCase())
   );
 
-  const searchAmazon = async (productName: string) => {
-    setComparisons((prev) => ({
-      ...prev,
-      [productName]: { loading: true, results: [] },
-    }));
+  const key = (name: string, source: Source) => `${name}::${source}`;
+
+  const searchSource = async (productName: string, source: Source) => {
+    const k = key(productName, source);
+    setComparisons((prev) => ({ ...prev, [k]: { loading: true, results: [] } }));
 
     try {
-      const { data, error } = await supabase.functions.invoke("search-amazon", {
+      const fnName = source === "amazon" ? "search-amazon" : "search-mercadolivre";
+      const { data, error } = await supabase.functions.invoke(fnName, {
         body: { product_name: productName },
       });
 
@@ -66,40 +67,38 @@ export default function OnlineComparison() {
       if (data?.success) {
         setComparisons((prev) => ({
           ...prev,
-          [productName]: {
-            loading: false,
-            results: data.results ?? [],
-            searchUrl: data.search_url,
-          },
+          [k]: { loading: false, results: data.results ?? [], searchUrl: data.search_url },
         }));
       } else {
         setComparisons((prev) => ({
           ...prev,
-          [productName]: {
-            loading: false,
-            results: [],
-            error: data?.error || "Erro ao buscar",
-          },
+          [k]: { loading: false, results: [], error: data?.error || "Erro ao buscar" },
         }));
       }
     } catch (e: any) {
       setComparisons((prev) => ({
         ...prev,
-        [productName]: {
-          loading: false,
-          results: [],
-          error: e.message || "Erro ao buscar",
-        },
+        [k]: { loading: false, results: [], error: e.message || "Erro ao buscar" },
       }));
     }
   };
 
+  const searchBoth = async (productName: string) => {
+    await Promise.all([
+      searchSource(productName, "amazon"),
+      searchSource(productName, "ml"),
+    ]);
+  };
+
   // Free-text search
   const [freeSearch, setFreeSearch] = useState("");
-  const handleFreeSearch = () => {
-    if (freeSearch.trim()) {
-      searchAmazon(freeSearch.trim());
-    }
+  const [freeSearching, setFreeSearching] = useState(false);
+  const handleFreeSearch = async () => {
+    const term = freeSearch.trim();
+    if (!term) return;
+    setFreeSearching(true);
+    await searchBoth(term);
+    setFreeSearching(false);
   };
 
   return (
@@ -107,7 +106,7 @@ export default function OnlineComparison() {
       <div>
         <h1 className="text-2xl font-bold text-foreground">Comparativo Online</h1>
         <p className="text-muted-foreground text-sm">
-          Compare preços do supermercado com a Amazon Brasil
+          Compare preços do supermercado com Amazon e Mercado Livre
         </p>
       </div>
 
@@ -118,26 +117,27 @@ export default function OnlineComparison() {
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Buscar qualquer produto na Amazon..."
+                placeholder="Buscar qualquer produto online..."
                 value={freeSearch}
                 onChange={(e) => setFreeSearch(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleFreeSearch()}
                 className="pl-9"
               />
             </div>
-            <Button onClick={handleFreeSearch} disabled={!freeSearch.trim()}>
-              <Globe className="h-4 w-4 mr-2" />
+            <Button onClick={handleFreeSearch} disabled={!freeSearch.trim() || freeSearching}>
+              {freeSearching ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Globe className="h-4 w-4 mr-2" />}
               Buscar
             </Button>
           </div>
 
-          {/* Free search result */}
-          {comparisons[freeSearch.trim()] && (
+          {/* Free search results */}
+          {(comparisons[key(freeSearch.trim(), "amazon")] || comparisons[key(freeSearch.trim(), "ml")]) && (
             <div className="mt-4">
-              <ComparisonCard
+              <ComparisonTabs
                 productName={freeSearch.trim()}
                 localPrice={null}
-                state={comparisons[freeSearch.trim()]}
+                amazonState={comparisons[key(freeSearch.trim(), "amazon")]}
+                mlState={comparisons[key(freeSearch.trim(), "ml")]}
               />
             </div>
           )}
@@ -175,7 +175,11 @@ export default function OnlineComparison() {
 
       <div className="space-y-3">
         {filtered?.map((product) => {
-          const state = comparisons[product.canonical_name];
+          const amazonState = comparisons[key(product.canonical_name, "amazon")];
+          const mlState = comparisons[key(product.canonical_name, "ml")];
+          const isLoading = amazonState?.loading || mlState?.loading;
+          const hasResults = amazonState?.results?.length || mlState?.results?.length;
+
           return (
             <Card key={product.id}>
               <CardContent className="py-4">
@@ -196,20 +200,22 @@ export default function OnlineComparison() {
                     )}
                     <Button
                       size="sm"
-                      variant={state?.results?.length ? "outline" : "default"}
-                      onClick={() => searchAmazon(product.canonical_name)}
-                      disabled={state?.loading}
+                      variant={hasResults ? "outline" : "default"}
+                      onClick={() => searchBoth(product.canonical_name)}
+                      disabled={!!isLoading}
                     >
-                      {state?.loading ? "Buscando..." : state?.results?.length ? "Atualizar" : "Comparar"}
+                      {isLoading ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                      {isLoading ? "Buscando..." : hasResults ? "Atualizar" : "Comparar"}
                     </Button>
                   </div>
                 </div>
 
-                {state && (
-                  <ComparisonCard
+                {(amazonState || mlState) && (
+                  <ComparisonTabs
                     productName={product.canonical_name}
                     localPrice={product.avg_price}
-                    state={state}
+                    amazonState={amazonState}
+                    mlState={mlState}
                   />
                 )}
               </CardContent>
@@ -221,18 +227,53 @@ export default function OnlineComparison() {
   );
 }
 
-function ComparisonCard({
+function ComparisonTabs({
   productName,
   localPrice,
-  state,
+  amazonState,
+  mlState,
 }: {
   productName: string;
   localPrice: number | null;
-  state: ComparisonState;
+  amazonState?: ComparisonState;
+  mlState?: ComparisonState;
 }) {
+  return (
+    <Tabs defaultValue="amazon" className="mt-3">
+      <TabsList className="h-8">
+        <TabsTrigger value="amazon" className="text-xs px-3 py-1">
+          Amazon {amazonState?.results?.length ? `(${amazonState.results.length})` : ""}
+        </TabsTrigger>
+        <TabsTrigger value="ml" className="text-xs px-3 py-1">
+          Mercado Livre {mlState?.results?.length ? `(${mlState.results.length})` : ""}
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent value="amazon">
+        <SourceResults localPrice={localPrice} state={amazonState} sourceName="Amazon" />
+      </TabsContent>
+      <TabsContent value="ml">
+        <SourceResults localPrice={localPrice} state={mlState} sourceName="Mercado Livre" />
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+function SourceResults({
+  localPrice,
+  state,
+  sourceName,
+}: {
+  localPrice: number | null;
+  state?: ComparisonState;
+  sourceName: string;
+}) {
+  if (!state) {
+    return <p className="text-sm text-muted-foreground py-2">Clique em "Comparar" para buscar no {sourceName}.</p>;
+  }
+
   if (state.loading) {
     return (
-      <div className="mt-3 space-y-2">
+      <div className="space-y-2">
         <Skeleton className="h-16 w-full" />
         <Skeleton className="h-16 w-full" />
       </div>
@@ -241,7 +282,7 @@ function ComparisonCard({
 
   if (state.error) {
     return (
-      <div className="mt-3 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
+      <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
         {state.error}
       </div>
     );
@@ -249,8 +290,8 @@ function ComparisonCard({
 
   if (state.results.length === 0) {
     return (
-      <div className="mt-3 p-3 rounded-lg bg-muted text-muted-foreground text-sm">
-        Nenhum resultado encontrado na Amazon.
+      <div className="p-3 rounded-lg bg-muted text-muted-foreground text-sm">
+        Nenhum resultado encontrado no {sourceName}.
         {state.searchUrl && (
           <a
             href={state.searchUrl}
@@ -268,8 +309,7 @@ function ComparisonCard({
   const cheapest = state.results[0];
 
   return (
-    <div className="mt-3 space-y-2">
-      {/* Main comparison */}
+    <div className="space-y-2">
       {localPrice && (
         <div className="flex items-center gap-4 p-3 rounded-lg bg-muted/50 border">
           <div className="flex-1 text-center">
@@ -296,8 +336,8 @@ function ComparisonCard({
                 <Badge
                   className={`gap-1 ${
                     isOnlineCheaper
-                      ? "bg-green-600 hover:bg-green-700 text-white"
-                      : "bg-red-600 hover:bg-red-700 text-white"
+                      ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                      : "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30"
                   }`}
                 >
                   {isOnlineCheaper ? (
@@ -312,13 +352,12 @@ function ComparisonCard({
           </div>
 
           <div className="flex-1 text-center">
-            <p className="text-xs text-muted-foreground mb-1">Amazon</p>
+            <p className="text-xs text-muted-foreground mb-1">{sourceName}</p>
             <p className="text-lg font-bold text-primary">{formatBRL(cheapest.price)}</p>
           </div>
         </div>
       )}
 
-      {/* All results */}
       <div className="space-y-1.5">
         {state.results.map((r, i) => (
           <div
@@ -350,7 +389,7 @@ function ComparisonCard({
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
         >
-          Ver todos na Amazon <ExternalLink className="h-3 w-3" />
+          Ver todos no {sourceName} <ExternalLink className="h-3 w-3" />
         </a>
       )}
     </div>

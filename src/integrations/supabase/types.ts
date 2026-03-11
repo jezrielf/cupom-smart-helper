@@ -74,6 +74,9 @@ export type Database = {
           last_purchased_at: string | null
           max_price: number | null
           min_price: number | null
+          ml_price: number | null
+          ml_updated_at: string | null
+          ml_url: string | null
           online_price: number | null
           online_updated_at: string | null
           online_url: string | null
@@ -95,6 +98,9 @@ export type Database = {
           last_purchased_at?: string | null
           max_price?: number | null
           min_price?: number | null
+          ml_price?: number | null
+          ml_updated_at?: string | null
+          ml_url?: string | null
           online_price?: number | null
           online_updated_at?: string | null
           online_url?: string | null
@@ -116,6 +122,9 @@ export type Database = {
           last_purchased_at?: string | null
           max_price?: number | null
           min_price?: number | null
+          ml_price?: number | null
+          ml_updated_at?: string | null
+          ml_url?: string | null
           online_price?: number | null
           online_updated_at?: string | null
           online_url?: string | null
