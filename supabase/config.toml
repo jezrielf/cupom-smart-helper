@@ -2,3 +2,6 @@ project_id = "pchwnmftqtxlpxmlkrhg"
 
 [functions.fetch-nfce]
 verify_jwt = false
+
+[functions.search-mercadolivre]
+verify_jwt = false
