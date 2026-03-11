@@ -111,7 +111,7 @@ export default function ProductCatalog() {
   const [search, setSearch] = useState("");
   const [refreshingAmazon, setRefreshingAmazon] = useState<Set<string>>(new Set());
   const [refreshingML, setRefreshingML] = useState<Set<string>>(new Set());
-  const [refreshingIfood, setRefreshingIfood] = useState<Set<string>>(new Set());
+  
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; currentProduct: string } | null>(null);
 
   const { data: products, isLoading } = useQuery({
