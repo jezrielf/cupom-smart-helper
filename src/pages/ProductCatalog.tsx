@@ -114,74 +114,119 @@ export default function ProductCatalog() {
           <p className="text-muted-foreground">{products?.length === 0 ? "Nenhum produto encontrado nos seus cupons." : "Nenhum resultado encontrado."}</p>
         </div>
       ) : (
-        <div className="rounded-lg border border-border overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Data</TableHead>
-                <TableHead>Produto</TableHead>
-                <TableHead className="hidden sm:table-cell">Código</TableHead>
-                <TableHead>Qtd / Unid.</TableHead>
-                <TableHead className="text-right">Preço Unit.</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead className="hidden sm:table-cell">Supermercado</TableHead>
-                <TableHead className="w-36">
-                  <RefreshCw className="h-3 w-3 inline mr-1" />Recorrência
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((p) => {
-                const smName = (p.supermarkets as any)?.trade_name || (p.supermarkets as any)?.name || "—";
-                return (
-                  <TableRow key={p.id}>
-                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+        <>
+          {/* Mobile cards */}
+          <div className="space-y-3 md:hidden">
+            {filtered.map((p) => {
+              const smName = (p.supermarkets as any)?.trade_name || (p.supermarkets as any)?.name || "—";
+              return (
+                <div key={p.id} className="rounded-lg border border-border bg-card p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-medium text-sm text-foreground leading-tight">{p.product_name}</p>
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
                       {format(new Date(p.purchase_date), "dd/MM/yy")}
-                    </TableCell>
-                    <TableCell className="font-medium text-foreground text-sm max-w-[200px] truncate">
-                      {p.product_name}
-                    </TableCell>
-                    <TableCell className="hidden sm:table-cell text-xs text-muted-foreground">
-                      {p.product_code || "—"}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                      {formatProductDetail(Number(p.quantity), p.unit, Number(p.unit_price))}
-                    </TableCell>
-                    <TableCell className="text-right text-xs text-foreground">
-                      {formatBRL(Number(p.unit_price))}
-                    </TableCell>
-                    <TableCell className="text-right text-xs font-medium text-foreground">
-                      {formatBRL(Number(p.total_price))}
-                    </TableCell>
-                    <TableCell className="hidden sm:table-cell text-xs text-muted-foreground max-w-[120px] truncate">
-                      {smName}
-                    </TableCell>
-                    <TableCell>
-                      <Select
-                        value={getFrequency(p.product_name_normalized)}
-                        onValueChange={(v) =>
-                          freqMut.mutate({
-                            name: p.product_name_normalized,
-                            days: v === "none" ? null : Number(v),
-                          })
-                        }
-                      >
-                        <SelectTrigger className="h-7 text-xs w-28">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {FREQUENCY_OPTIONS.map((o) => (
-                            <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>{formatProductDetail(Number(p.quantity), p.unit, Number(p.unit_price))}</span>
+                    <span className="font-medium text-foreground">{formatBRL(Number(p.total_price))}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted-foreground truncate max-w-[120px]">{smName}</span>
+                    <Select
+                      value={getFrequency(p.product_name_normalized)}
+                      onValueChange={(v) =>
+                        freqMut.mutate({
+                          name: p.product_name_normalized,
+                          days: v === "none" ? null : Number(v),
+                        })
+                      }
+                    >
+                      <SelectTrigger className="h-7 text-xs w-28">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {FREQUENCY_OPTIONS.map((o) => (
+                          <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Desktop table */}
+          <div className="rounded-lg border border-border overflow-x-auto hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Data</TableHead>
+                  <TableHead>Produto</TableHead>
+                  <TableHead>Código</TableHead>
+                  <TableHead>Qtd / Unid.</TableHead>
+                  <TableHead className="text-right">Preço Unit.</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
+                  <TableHead>Supermercado</TableHead>
+                  <TableHead className="w-36">
+                    <RefreshCw className="h-3 w-3 inline mr-1" />Recorrência
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((p) => {
+                  const smName = (p.supermarkets as any)?.trade_name || (p.supermarkets as any)?.name || "—";
+                  return (
+                    <TableRow key={p.id}>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                        {format(new Date(p.purchase_date), "dd/MM/yy")}
+                      </TableCell>
+                      <TableCell className="font-medium text-foreground text-sm max-w-[200px] truncate">
+                        {p.product_name}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {p.product_code || "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                        {formatProductDetail(Number(p.quantity), p.unit, Number(p.unit_price))}
+                      </TableCell>
+                      <TableCell className="text-right text-xs text-foreground">
+                        {formatBRL(Number(p.unit_price))}
+                      </TableCell>
+                      <TableCell className="text-right text-xs font-medium text-foreground">
+                        {formatBRL(Number(p.total_price))}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">
+                        {smName}
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          value={getFrequency(p.product_name_normalized)}
+                          onValueChange={(v) =>
+                            freqMut.mutate({
+                              name: p.product_name_normalized,
+                              days: v === "none" ? null : Number(v),
+                            })
+                          }
+                        >
+                          <SelectTrigger className="h-7 text-xs w-28">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {FREQUENCY_OPTIONS.map((o) => (
+                              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </>
       )}
     </div>
   );
