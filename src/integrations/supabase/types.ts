@@ -70,6 +70,9 @@ export type Database = {
           cheapest_supermarket_id: string | null
           created_at: string
           id: string
+          ifood_price: number | null
+          ifood_updated_at: string | null
+          ifood_url: string | null
           is_essential: boolean | null
           last_purchased_at: string | null
           max_price: number | null
@@ -94,6 +97,9 @@ export type Database = {
           cheapest_supermarket_id?: string | null
           created_at?: string
           id?: string
+          ifood_price?: number | null
+          ifood_updated_at?: string | null
+          ifood_url?: string | null
           is_essential?: boolean | null
           last_purchased_at?: string | null
           max_price?: number | null
@@ -118,6 +124,9 @@ export type Database = {
           cheapest_supermarket_id?: string | null
           created_at?: string
           id?: string
+          ifood_price?: number | null
+          ifood_updated_at?: string | null
+          ifood_url?: string | null
           is_essential?: boolean | null
           last_purchased_at?: string | null
           max_price?: number | null
