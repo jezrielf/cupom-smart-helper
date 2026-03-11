@@ -241,7 +241,7 @@ Deno.serve(async (req) => {
           { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-      url = `https://nfce.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?p=${cleanKey}`;
+      url = `https://portalsped.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?p=${cleanKey}`;
     }
 
     // Validate URL
@@ -256,6 +256,9 @@ Deno.serve(async (req) => {
         );
       }
     }
+
+    // Normalize URL domain - nfce.fazenda.mg.gov.br often has TLS issues
+    url = url.replace("nfce.fazenda.mg.gov.br", "portalsped.fazenda.mg.gov.br");
 
     // Try Firecrawl JSON extraction first (AI-powered structured extraction)
     const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
@@ -304,7 +307,8 @@ Deno.serve(async (req) => {
               },
               prompt: "Extraia os dados desta nota fiscal eletrônica (NFC-e) brasileira. Inclua TODOS os produtos listados com nome, código, quantidade, unidade (UN, KG, etc), preço unitário e preço total. O CNPJ deve conter apenas dígitos (sem pontos, barras ou hífens). A data de compra deve estar no formato DD/MM/AAAA HH:MM:SS. A chave de acesso tem 44 dígitos numéricos.",
             },
-            waitFor: 3000,
+            waitFor: 5000,
+            timeout: 30000,
           }),
         });
 
@@ -387,28 +391,36 @@ Deno.serve(async (req) => {
       // Native fetch fallback
       if (!html) {
         console.log("Using native fetch for:", url);
-        const response = await fetch(url, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml",
-          },
-          redirect: "follow",
-        });
+        try {
+          const response = await fetch(url, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml",
+            },
+            redirect: "follow",
+          });
 
-        if (!response.ok) {
-          if (response.status === 404) {
+          if (!response.ok) {
+            if (response.status === 404) {
+              return new Response(
+                JSON.stringify({ error: "Cupom fiscal não encontrado" }),
+                { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              );
+            }
             return new Response(
-              JSON.stringify({ error: "Cupom fiscal não encontrado" }),
-              { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              JSON.stringify({ error: `Erro ao acessar o portal: ${response.status}` }),
+              { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
           }
+
+          html = await response.text();
+        } catch (fetchError) {
+          console.error("Native fetch failed:", fetchError);
           return new Response(
-            JSON.stringify({ error: `Erro ao acessar o portal: ${response.status}` }),
+            JSON.stringify({ error: "Não foi possível acessar o portal da SEFAZ. Tente novamente em alguns instantes." }),
             { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-
-        html = await response.text();
       }
 
       parsed = parseNfceHtml(html);
