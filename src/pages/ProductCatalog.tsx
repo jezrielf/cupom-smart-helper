@@ -389,7 +389,19 @@ export default function ProductCatalog() {
               return (
                 <div key={p.id} className="rounded-lg border border-border bg-card p-3 space-y-2">
                   <div className="flex items-start justify-between gap-2">
-                    <p className="font-medium text-sm text-foreground leading-tight">{p.product_name}</p>
+                    <div>
+                      <p className="font-medium text-sm text-foreground leading-tight">{p.product_name}</p>
+                      {(entry?.ai_category || entry?.brand) && (
+                        <div className="flex items-center gap-1 mt-1 flex-wrap">
+                          {entry?.ai_category && (
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{entry.ai_category}</Badge>
+                          )}
+                          {entry?.brand && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">{entry.brand}</Badge>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     <span className="text-xs text-muted-foreground whitespace-nowrap">
                       {format(new Date(p.purchase_date), "dd/MM/yy")}
                     </span>
