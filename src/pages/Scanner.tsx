@@ -192,6 +192,19 @@ export default function Scanner() {
       );
       setPreviewOpen(false);
       setParsedReceipt(null);
+
+      // Trigger AI analysis in background (non-blocking)
+      analyzeWithAI(
+        parsedReceipt.products.map((p) => ({
+          product_name: p.product_name,
+          product_name_normalized: p.product_name_normalized,
+          unit_price: p.unit_price,
+          quantity: p.quantity,
+          unit: p.unit,
+        })),
+        { showToasts: true }
+      ).catch(() => {}); // fire-and-forget
+
       navigate("/cupons");
     } catch (err) {
       toast.error("Erro ao salvar cupom.");
