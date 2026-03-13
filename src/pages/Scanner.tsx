@@ -8,6 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { QRScannerCamera } from "@/components/scanner/QRScannerCamera";
 import { ManualInput } from "@/components/scanner/ManualInput";
 import { ReceiptPreview, type ParsedReceipt } from "@/components/scanner/ReceiptPreview";
+import { useAIProductIntelligence } from "@/hooks/useAIProductIntelligence";
 
 export default function Scanner() {
   const navigate = useNavigate();
