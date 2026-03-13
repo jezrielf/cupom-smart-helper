@@ -184,7 +184,23 @@ export default function ProductCatalog() {
     },
   });
 
-  const handleRefreshOnlinePrice = async (normalizedName: string) => {
+  const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+  const isCacheFresh = (updatedAt: string | null | undefined): boolean => {
+    if (!updatedAt) return false;
+    return Date.now() - new Date(updatedAt).getTime() < CACHE_TTL_MS;
+  };
+
+  const handleRefreshOnlinePrice = async (normalizedName: string, force = false) => {
+    // Check cache before calling API
+    if (!force) {
+      const entry = getCatalogEntry(normalizedName);
+      if (entry?.online_price && isCacheFresh(entry.online_updated_at)) {
+        toast.info(`Preço Amazon em cache (atualizado recentemente)`);
+        return;
+      }
+    }
+
     setRefreshingAmazon((prev) => new Set(prev).add(normalizedName));
     try {
       const { data, error } = await supabase.functions.invoke("search-amazon", {
