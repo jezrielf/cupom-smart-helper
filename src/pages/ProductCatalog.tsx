@@ -246,7 +246,15 @@ export default function ProductCatalog() {
     }
   };
 
-  const handleRefreshMLPrice = async (normalizedName: string) => {
+  const handleRefreshMLPrice = async (normalizedName: string, force = false) => {
+    if (!force) {
+      const entry = getCatalogEntry(normalizedName);
+      if (entry?.ml_price && isCacheFresh(entry.ml_updated_at)) {
+        toast.info(`Preço Mercado Livre em cache (atualizado recentemente)`);
+        return;
+      }
+    }
+
     setRefreshingML((prev) => new Set(prev).add(normalizedName));
     try {
       const { data, error } = await supabase.functions.invoke("search-mercadolivre", {
