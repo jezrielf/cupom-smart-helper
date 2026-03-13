@@ -353,6 +353,16 @@ export default function ProductCatalog() {
             {bulkProgress ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
             {bulkProgress ? "Atualizando..." : "Atualizar todos"}
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleAIAnalyze}
+            disabled={aiAnalyzing || filtered.length === 0}
+            className="whitespace-nowrap"
+          >
+            {aiAnalyzing ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Sparkles className="h-4 w-4 mr-1" />}
+            {aiAnalyzing ? "Analisando..." : "Analisar com IA"}
+          </Button>
         </div>
         {bulkProgress && (
           <div className="max-w-lg space-y-1">
