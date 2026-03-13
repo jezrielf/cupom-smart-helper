@@ -115,6 +115,7 @@ export default function ProductCatalog() {
   const [refreshingML, setRefreshingML] = useState<Set<string>>(new Set());
   
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; currentProduct: string } | null>(null);
+  const { analyze: analyzeWithAI, analyzing: aiAnalyzing } = useAIProductIntelligence();
 
   const { data: products, isLoading } = useQuery({
     queryKey: ["user-products", user?.id],
