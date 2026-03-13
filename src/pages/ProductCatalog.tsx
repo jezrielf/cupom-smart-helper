@@ -295,6 +295,22 @@ export default function ProductCatalog() {
     toast.success(`${successCount} de ${uniqueNames.length} preços atualizados`);
   };
 
+  const handleAIAnalyze = async () => {
+    if (!products || products.length === 0) return;
+    const uniqueProducts = [...new Map(products.map((p) => [p.product_name_normalized, p])).values()];
+    await analyzeWithAI(
+      uniqueProducts.map((p) => ({
+        product_name: p.product_name,
+        product_name_normalized: p.product_name_normalized,
+        unit_price: Number(p.unit_price),
+        quantity: Number(p.quantity),
+        unit: p.unit,
+      })),
+      { showToasts: true }
+    );
+    qc.invalidateQueries({ queryKey: ["product-catalog-freq"] });
+  };
+
   const getCatalogEntry = (normalizedName: string) => catalog?.find((c) => c.canonical_name === normalizedName);
   const getFrequency = (normalizedName: string): string => {
     const entry = getCatalogEntry(normalizedName);
