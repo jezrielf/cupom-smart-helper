@@ -17,6 +17,7 @@ export default function Scanner() {
   const [parsedReceipt, setParsedReceipt] = useState<ParsedReceipt | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const { analyze: analyzeWithAI } = useAIProductIntelligence();
 
   const fetchReceipt = async (value: string, type: "url" | "access_key") => {
     if (loading) return;
