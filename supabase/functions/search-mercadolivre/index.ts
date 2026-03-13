@@ -4,52 +4,26 @@ const corsHeaders = {
 };
 
 const ABBREVIATION_MAP: Record<string, string> = {
-  'mac': 'macarrao',
-  'cr': 'creme',
-  'tom': 'tomate',
-  'espag': 'espaguete',
-  'sta': 'santa',
-  'abs': 'absorvente',
-  'ext': 'extrato',
-  'liq': 'liquido',
-  'desod': 'desodorante',
-  'sab': 'sabonete',
-  'det': 'detergente',
-  'amac': 'amaciante',
-  'cond': 'condicionador',
-  'shamp': 'shampoo',
-  'bisc': 'biscoito',
-  'choc': 'chocolate',
-  'marg': 'margarina',
-  'refrig': 'refrigerante',
-  'integ': 'integral',
-  'trad': 'tradicional',
-  'antissep': 'antisseptico',
-  'hig': 'higienico',
-  'alc': 'alcool',
-  'desinf': 'desinfetante',
-  'apar': 'aparelho',
-  'mist': 'mistura',
-  'past': 'pastilha',
-  'tint': 'tintura',
-  'esc': 'escova',
-  'org': 'organico',
-  'desc': 'descartavel',
-  'acond': 'acondicionador',
-  'deseng': 'desengraxante',
-  'limp': 'limpador',
-  'enxag': 'enxaguante',
+  'mac': 'macarrao', 'cr': 'creme', 'tom': 'tomate', 'espag': 'espaguete',
+  'sta': 'santa', 'abs': 'absorvente', 'ext': 'extrato', 'liq': 'liquido',
+  'desod': 'desodorante', 'sab': 'sabonete', 'det': 'detergente', 'deterg': 'detergente',
+  'amac': 'amaciante', 'cond': 'condicionador', 'shamp': 'shampoo',
+  'bisc': 'biscoito', 'choc': 'chocolate', 'marg': 'margarina',
+  'refrig': 'refrigerante', 'integ': 'integral', 'trad': 'tradicional',
+  'antissep': 'antisseptico', 'antissept': 'antisseptico',
+  'hig': 'higienico', 'alc': 'alcool', 'desinf': 'desinfetante',
+  'apar': 'aparelho', 'mist': 'mistura', 'past': 'pastilha',
+  'tint': 'tintura', 'esc': 'escova', 'org': 'organico',
+  'desc': 'descartavel', 'acond': 'acondicionador', 'deseng': 'desengraxante',
+  'limp': 'limpador', 'enxag': 'enxaguante',
+  'la': 'la de', 'aco': 'aco',
 };
 
 const PACKAGING_CODES = /\b(pc|pt|gl|fr|sc|tp|gr|cx|fd|bd|lt|un|dp|tb|env|fl|sq|pct|gar|sac)\b/g;
 const WEIGHT_VOLUME = /\b(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/gi;
-const SIZE_CODES = /\b[a-z]?\d{1,2}\b/g;
 
 function normalizeForSearch(name: string): { query: string; volume: string | null } {
-  let normalized = name
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
+  let normalized = name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
   const volRegex = /\b(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/gi;
   const volumeMatches: string[] = [];
@@ -63,13 +37,12 @@ function normalizeForSearch(name: string): { query: string; volume: string | nul
 
   normalized = normalized.replace(WEIGHT_VOLUME, ' ');
   normalized = normalized.replace(PACKAGING_CODES, ' ');
-  normalized = normalized.replace(SIZE_CODES, ' ');
   normalized = normalized.replace(/\b([a-z]+)\b/g, (m) => ABBREVIATION_MAP[m] || m);
   normalized = normalized.replace(/[^a-z0-9\s]/g, '');
   normalized = normalized.trim().replace(/\s+/g, ' ');
 
   const query = volume ? `${normalized} ${volume}` : normalized;
-  console.log(`ML search query: "${name}" → "${query}" (volume: ${volume})`);
+  console.log(`ML search: "${name}" → "${query}" (volume: ${volume})`);
   return { query, volume };
 }
 
@@ -88,17 +61,37 @@ function isVolumeCompatible(resultText: string | null, targetVolume: string | nu
   const target = parseVolume(targetVolume);
   const result = parseVolume(resultText);
   if (!target || !result) return true;
-
   const targetUnit = target.replace(/[\d.]/g, '');
   const resultUnit = result.replace(/[\d.]/g, '');
   if (targetUnit !== resultUnit) return true;
-
   const targetQty = parseFloat(target.replace(/[a-z]/gi, ''));
   const resultQty = parseFloat(result.replace(/[a-z]/gi, ''));
   if (isNaN(targetQty) || isNaN(resultQty)) return true;
-
   const ratio = resultQty / targetQty;
   return ratio >= 0.8 && ratio <= 1.2;
+}
+
+function extractFirstPrice(markdown: string): number | null {
+  // Extract the FIRST valid BRL price (not the minimum of all)
+  const pattern = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/g;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(markdown)) !== null) {
+    const priceStr = m[1].replace(/\./g, '').replace(',', '.');
+    const price = parseFloat(priceStr);
+    if (!isNaN(price) && price > 1 && price < 10000) {
+      return price;
+    }
+  }
+  return null;
+}
+
+function isProductPage(url: string): boolean {
+  // ML product pages contain /p/MLB
+  return /\/p\/ML[A-Z]/.test(url);
+}
+
+function isListingPage(url: string): boolean {
+  return url.includes('/s?') || url.includes('#searchVariation') || url.includes('/ofertas');
 }
 
 interface MLProduct {
@@ -106,28 +99,6 @@ interface MLProduct {
   price: number;
   url: string;
   volume?: string;
-}
-
-function extractPriceFromMarkdown(markdown: string): number | null {
-  const pricePatterns = [
-    /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/g,
-    /(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:à vista|no pix)/gi,
-  ];
-
-  const prices: number[] = [];
-  for (const pattern of pricePatterns) {
-    let m: RegExpExecArray | null;
-    while ((m = pattern.exec(markdown)) !== null) {
-      const priceStr = m[1].replace(/\./g, '').replace(',', '.');
-      const price = parseFloat(priceStr);
-      if (!isNaN(price) && price > 0 && price < 10000) {
-        prices.push(price);
-      }
-    }
-  }
-
-  if (prices.length === 0) return null;
-  return Math.min(...prices);
 }
 
 Deno.serve(async (req) => {
@@ -154,7 +125,8 @@ Deno.serve(async (req) => {
     }
 
     const { query, volume } = normalizeForSearch(product_name);
-    const searchQuery = `${query} site:mercadolivre.com.br`;
+    // Don't use site: operator - filter by domain in code instead
+    const searchQuery = `${query} mercado livre`;
 
     console.log('Firecrawl search query:', searchQuery);
 
@@ -166,7 +138,7 @@ Deno.serve(async (req) => {
       },
       body: JSON.stringify({
         query: searchQuery,
-        limit: 5,
+        limit: 8,
         lang: 'pt-br',
         country: 'br',
         scrapeOptions: {
@@ -177,10 +149,10 @@ Deno.serve(async (req) => {
     });
 
     const searchData = await searchResponse.json();
-    console.log('Firecrawl search response status:', searchResponse.status);
+    console.log('Firecrawl response status:', searchResponse.status);
 
     if (!searchResponse.ok) {
-      console.error('Firecrawl search error:', JSON.stringify(searchData));
+      console.error('Firecrawl error:', JSON.stringify(searchData));
       return new Response(
         JSON.stringify({ success: false, error: searchData.error || 'Search failed' }),
         { status: searchResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -190,6 +162,11 @@ Deno.serve(async (req) => {
     const searchResults = searchData?.data || [];
     console.log(`Search returned ${searchResults.length} results`);
 
+    // Log all URLs for debugging
+    for (const r of searchResults) {
+      console.log(`  URL: ${(r.url || '').substring(0, 100)}`);
+    }
+
     const results: MLProduct[] = [];
 
     for (const result of searchResults) {
@@ -197,19 +174,29 @@ Deno.serve(async (req) => {
       const title = result.title || result.metadata?.title || '';
       const markdown = result.markdown || '';
 
-      if (!url.includes('mercadolivre.com.br') || !title) continue;
+      // Accept mercadolivre.com.br OR mercadolibre.com URLs
+      const isML = url.includes('mercadolivre.com.br') || url.includes('mercadolibre.com');
+      if (!isML || !title) {
+        console.log(`Skipped (not ML): ${url.substring(0, 80)}`);
+        continue;
+      }
 
-      const price = extractPriceFromMarkdown(markdown);
+      // Skip listing/search pages
+      if (isListingPage(url)) {
+        console.log(`Skipped (listing page): ${url.substring(0, 80)}`);
+        continue;
+      }
 
+      const price = extractFirstPrice(markdown);
       if (price && price > 0) {
         const resultVolume = parseVolume(title) || undefined;
         results.push({
           title: title.substring(0, 200),
           price,
-          url,
+          url, // Direct product URL
           volume: resultVolume,
         });
-        console.log(`Found: "${title.substring(0, 60)}" → R$${price}`);
+        console.log(`Found: "${title.substring(0, 60)}" → R$${price} (${isProductPage(url) ? 'product' : 'other'}) → ${url.substring(0, 80)}`);
       }
     }
 
@@ -223,9 +210,15 @@ Deno.serve(async (req) => {
       }
     }
 
-    filteredResults.sort((a, b) => a.price - b.price);
-    const finalResults = filteredResults.slice(0, 5);
+    // Sort: product pages first, then by price
+    filteredResults.sort((a, b) => {
+      const aProduct = isProductPage(a.url) ? 0 : 1;
+      const bProduct = isProductPage(b.url) ? 0 : 1;
+      if (aProduct !== bProduct) return aProduct - bProduct;
+      return a.price - b.price;
+    });
 
+    const finalResults = filteredResults.slice(0, 5);
     const searchUrl = `https://lista.mercadolivre.com.br/${encodeURIComponent(query)}`;
     console.log(`Found ${finalResults.length} ML results for "${product_name}"`);
 
