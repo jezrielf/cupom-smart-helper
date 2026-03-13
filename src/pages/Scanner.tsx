@@ -8,6 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { QRScannerCamera } from "@/components/scanner/QRScannerCamera";
 import { ManualInput } from "@/components/scanner/ManualInput";
 import { ReceiptPreview, type ParsedReceipt } from "@/components/scanner/ReceiptPreview";
+import { useAIProductIntelligence } from "@/hooks/useAIProductIntelligence";
 
 export default function Scanner() {
   const navigate = useNavigate();
@@ -16,6 +17,7 @@ export default function Scanner() {
   const [parsedReceipt, setParsedReceipt] = useState<ParsedReceipt | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const { analyze: analyzeWithAI } = useAIProductIntelligence();
 
   const fetchReceipt = async (value: string, type: "url" | "access_key") => {
     if (loading) return;
@@ -190,6 +192,19 @@ export default function Scanner() {
       );
       setPreviewOpen(false);
       setParsedReceipt(null);
+
+      // Trigger AI analysis in background (non-blocking)
+      analyzeWithAI(
+        parsedReceipt.products.map((p) => ({
+          product_name: p.product_name,
+          product_name_normalized: p.product_name_normalized,
+          unit_price: p.unit_price,
+          quantity: p.quantity,
+          unit: p.unit,
+        })),
+        { showToasts: true }
+      ).catch(() => {}); // fire-and-forget
+
       navigate("/cupons");
     } catch (err) {
       toast.error("Erro ao salvar cupom.");

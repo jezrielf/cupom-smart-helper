@@ -4,15 +4,17 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Package, Search, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
+import { Package, Search, RefreshCw, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { formatProductDetail } from "@/lib/formatUnit";
 import { toast } from "sonner";
+import { useAIProductIntelligence } from "@/hooks/useAIProductIntelligence";
 
 const formatBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -113,6 +115,7 @@ export default function ProductCatalog() {
   const [refreshingML, setRefreshingML] = useState<Set<string>>(new Set());
   
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; currentProduct: string } | null>(null);
+  const { analyze: analyzeWithAI, analyzing: aiAnalyzing } = useAIProductIntelligence();
 
   const { data: products, isLoading } = useQuery({
     queryKey: ["user-products", user?.id],
@@ -133,7 +136,7 @@ export default function ProductCatalog() {
     queryFn: async () => {
       const { data } = await supabase
         .from("product_catalog")
-        .select("canonical_name, purchase_frequency_days, online_price, online_url, online_updated_at, ml_price, ml_url, ml_updated_at");
+        .select("canonical_name, purchase_frequency_days, online_price, online_url, online_updated_at, ml_price, ml_url, ml_updated_at, brand, ai_category, weight_g");
       return data ?? [];
     },
   });
@@ -292,6 +295,22 @@ export default function ProductCatalog() {
     toast.success(`${successCount} de ${uniqueNames.length} preços atualizados`);
   };
 
+  const handleAIAnalyze = async () => {
+    if (!products || products.length === 0) return;
+    const uniqueProducts = [...new Map(products.map((p) => [p.product_name_normalized, p])).values()];
+    await analyzeWithAI(
+      uniqueProducts.map((p) => ({
+        product_name: p.product_name,
+        product_name_normalized: p.product_name_normalized,
+        unit_price: Number(p.unit_price),
+        quantity: Number(p.quantity),
+        unit: p.unit,
+      })),
+      { showToasts: true }
+    );
+    qc.invalidateQueries({ queryKey: ["product-catalog-freq"] });
+  };
+
   const getCatalogEntry = (normalizedName: string) => catalog?.find((c) => c.canonical_name === normalizedName);
   const getFrequency = (normalizedName: string): string => {
     const entry = getCatalogEntry(normalizedName);
@@ -334,6 +353,16 @@ export default function ProductCatalog() {
             {bulkProgress ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
             {bulkProgress ? "Atualizando..." : "Atualizar todos"}
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleAIAnalyze}
+            disabled={aiAnalyzing || filtered.length === 0}
+            className="whitespace-nowrap"
+          >
+            {aiAnalyzing ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Sparkles className="h-4 w-4 mr-1" />}
+            {aiAnalyzing ? "Analisando..." : "Analisar com IA"}
+          </Button>
         </div>
         {bulkProgress && (
           <div className="max-w-lg space-y-1">
@@ -360,7 +389,19 @@ export default function ProductCatalog() {
               return (
                 <div key={p.id} className="rounded-lg border border-border bg-card p-3 space-y-2">
                   <div className="flex items-start justify-between gap-2">
-                    <p className="font-medium text-sm text-foreground leading-tight">{p.product_name}</p>
+                    <div>
+                      <p className="font-medium text-sm text-foreground leading-tight">{p.product_name}</p>
+                      {(entry?.ai_category || entry?.brand) && (
+                        <div className="flex items-center gap-1 mt-1 flex-wrap">
+                          {entry?.ai_category && (
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{entry.ai_category}</Badge>
+                          )}
+                          {entry?.brand && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">{entry.brand}</Badge>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     <span className="text-xs text-muted-foreground whitespace-nowrap">
                       {format(new Date(p.purchase_date), "dd/MM/yy")}
                     </span>

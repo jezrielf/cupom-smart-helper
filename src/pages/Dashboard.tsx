@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -10,12 +11,16 @@ import { ptBR } from "date-fns/locale";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
+import { AISuggestions, type AISuggestion } from "@/components/ai/AISuggestions";
+import { useAIProductIntelligence } from "@/hooks/useAIProductIntelligence";
 
 const formatBRL = (v: number) =>
   v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const { analyze, analyzing, lastResult } = useAIProductIntelligence();
+  const [suggestions, setSuggestions] = useState<AISuggestion[]>([]);
 
   const { data: receipts, isLoading: loadingReceipts } = useQuery({
     queryKey: ["receipts-dashboard", user?.id],
@@ -52,6 +57,39 @@ export default function Dashboard() {
       return new Set(data.map((p) => p.product_name_normalized)).size;
     },
   });
+
+  // Fetch recent products for AI analysis
+  const { data: recentProducts } = useQuery({
+    queryKey: ["recent-products-ai", user?.id],
+    enabled: !!user,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("product_name, product_name_normalized, unit_price, quantity, unit")
+        .eq("user_id", user!.id)
+        .order("purchase_date", { ascending: false })
+        .limit(30);
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  // Auto-trigger AI analysis when recent products are loaded
+  useEffect(() => {
+    if (recentProducts && recentProducts.length > 0 && suggestions.length === 0 && !analyzing) {
+      analyze(recentProducts, { showToasts: false }).then((result) => {
+        if (result?.suggestions) setSuggestions(result.suggestions);
+      });
+    }
+  }, [recentProducts]);
+
+  const handleRefreshAI = () => {
+    if (recentProducts && recentProducts.length > 0) {
+      analyze(recentProducts, { showToasts: false }).then((result) => {
+        if (result?.suggestions) setSuggestions(result.suggestions);
+      });
+    }
+  };
 
   const totalReceipts = receipts?.length ?? 0;
   const totalSpent = receipts?.reduce((s, r) => s + Number(r.total_amount), 0) ?? 0;
@@ -152,6 +190,13 @@ export default function Dashboard() {
           </Card>
         ))}
       </div>
+
+      {/* AI Suggestions */}
+      <AISuggestions
+        suggestions={suggestions}
+        loading={analyzing}
+        onRefresh={handleRefreshAI}
+      />
 
       {/* Charts */}
       <div className="grid md:grid-cols-2 gap-6">
