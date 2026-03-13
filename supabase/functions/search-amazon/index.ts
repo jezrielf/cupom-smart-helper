@@ -46,21 +46,16 @@ const PACKAGING_CODES = /\b(pc|pt|gl|fr|sc|tp|gr|cx|fd|bd|lt|un|dp|tb|env|fl|sq|
 const WEIGHT_VOLUME = /\b(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/gi;
 const SIZE_CODES = /\b[a-z]?\d{1,2}\b/g;
 
-interface NormalizeResult {
-  searchTerms: string;
-  volume: string | null;
-}
-
-function normalizeForSearch(name: string): NormalizeResult {
+function normalizeForSearch(name: string): { query: string; volume: string | null } {
   let normalized = name
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
 
-  // Extract volume/weight BEFORE removing it
+  // Extract volume/weight
+  const volRegex = /\b(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/gi;
   const volumeMatches: string[] = [];
   let match: RegExpExecArray | null;
-  const volRegex = /\b(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/gi;
   while ((match = volRegex.exec(normalized)) !== null) {
     const qty = match[1].replace(',', '.');
     const unit = match[3].toLowerCase();
@@ -68,22 +63,17 @@ function normalizeForSearch(name: string): NormalizeResult {
   }
   const volume = volumeMatches.length > 0 ? volumeMatches[0] : null;
 
-  // Remove weight/volume from text
   normalized = normalized.replace(WEIGHT_VOLUME, ' ');
   normalized = normalized.replace(PACKAGING_CODES, ' ');
   normalized = normalized.replace(SIZE_CODES, ' ');
-
   normalized = normalized.replace(/\b([a-z]+)\b/g, (m) => ABBREVIATION_MAP[m] || m);
   normalized = normalized.replace(/[^a-z0-9\s]/g, '');
-  normalized = normalized.trim().replace(/\s+/g, '+');
+  normalized = normalized.trim().replace(/\s+/g, ' ');
 
-  // Append volume back to search
-  if (volume) {
-    normalized = `${normalized}+${volume}`;
-  }
-
-  console.log(`Amazon normalized: "${name}" → "${normalized}" (volume: ${volume})`);
-  return { searchTerms: normalized, volume };
+  // Build search query with volume
+  const query = volume ? `${normalized} ${volume}` : normalized;
+  console.log(`Amazon search query: "${name}" → "${query}" (volume: ${volume})`);
+  return { query, volume };
 }
 
 function parseVolume(text: string): string | null {
@@ -91,27 +81,25 @@ function parseVolume(text: string): string | null {
   if (!m) return null;
   const qty = parseFloat(m[1].replace(',', '.'));
   const unit = m[3].toLowerCase();
-  // Normalize to base unit (ml or g)
   if (unit === 'l') return `${qty * 1000}ml`;
   if (unit === 'kg') return `${qty * 1000}g`;
   return `${qty}${unit}`;
 }
 
-function isVolumeCompatible(resultVolume: string | null, targetVolume: string | null): boolean {
-  if (!targetVolume || !resultVolume) return true; // can't compare, allow
+function isVolumeCompatible(resultText: string | null, targetVolume: string | null): boolean {
+  if (!targetVolume || !resultText) return true;
   const target = parseVolume(targetVolume);
-  const result = parseVolume(resultVolume);
+  const result = parseVolume(resultText);
   if (!target || !result) return true;
 
   const targetUnit = target.replace(/[\d.]/g, '');
   const resultUnit = result.replace(/[\d.]/g, '');
-  if (targetUnit !== resultUnit) return true; // different units, can't compare
+  if (targetUnit !== resultUnit) return true;
 
   const targetQty = parseFloat(target.replace(/[a-z]/gi, ''));
   const resultQty = parseFloat(result.replace(/[a-z]/gi, ''));
   if (isNaN(targetQty) || isNaN(resultQty)) return true;
 
-  // Allow within 20% tolerance
   const ratio = resultQty / targetQty;
   return ratio >= 0.8 && ratio <= 1.2;
 }
@@ -123,42 +111,28 @@ interface AmazonProduct {
   volume?: string;
 }
 
-function parseMarkdownResults(markdown: string, targetVolume: string | null): AmazonProduct[] {
-  const results: AmazonProduct[] = [];
-  const lines = markdown.split('\n');
+function extractPriceFromMarkdown(markdown: string): number | null {
+  // Look for BRL prices in the scraped product page
+  const pricePatterns = [
+    /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/g,
+    /(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:à vista|no pix)/gi,
+  ];
 
-  for (const line of lines) {
-    const titleMatch = line.match(/\[([^\]]{10,})\]\((https:\/\/www\.amazon\.com\.br\/[^\s)]+)\)/);
-    if (titleMatch) {
-      const title = titleMatch[1].trim();
-      const url = titleMatch[2];
-      const resultVolume = parseVolume(title);
-
-      const priceRegex = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/;
-      const idx = lines.indexOf(line);
-      for (let i = idx; i < Math.min(idx + 8, lines.length); i++) {
-        const priceMatch = lines[i].match(priceRegex);
-        if (priceMatch) {
-          const priceStr = priceMatch[1].replace(/\./g, '').replace(',', '.');
-          const price = parseFloat(priceStr);
-          if (!isNaN(price) && price > 0 && price < 10000) {
-            results.push({ title, price, url, volume: resultVolume || undefined });
-            break;
-          }
-        }
+  const prices: number[] = [];
+  for (const pattern of pricePatterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(markdown)) !== null) {
+      const priceStr = m[1].replace(/\./g, '').replace(',', '.');
+      const price = parseFloat(priceStr);
+      if (!isNaN(price) && price > 0 && price < 10000) {
+        prices.push(price);
       }
     }
-
-    if (results.length >= 10) break;
   }
 
-  // Filter by volume compatibility, fallback to all if none match
-  if (targetVolume) {
-    const compatible = results.filter(r => isVolumeCompatible(r.volume || r.title, targetVolume));
-    if (compatible.length > 0) return compatible.slice(0, 5);
-  }
-
-  return results.slice(0, 5);
+  // Return the lowest reasonable price found
+  if (prices.length === 0) return null;
+  return Math.min(...prices);
 }
 
 Deno.serve(async (req) => {
@@ -184,116 +158,91 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { searchTerms, volume } = normalizeForSearch(product_name);
-    const amazonUrl = `https://www.amazon.com.br/s?k=${searchTerms}&s=price-asc-rank`;
+    const { query, volume } = normalizeForSearch(product_name);
+    const searchQuery = `${query} site:amazon.com.br`;
 
-    console.log('Scraping Amazon URL:', amazonUrl);
+    console.log('Firecrawl search query:', searchQuery);
 
-    let results: AmazonProduct[] = [];
-
-    const volumeHint = volume ? ` that match the size/volume '${volume}'.` : '.';
-    const extractPrompt = `Extract the first 5 product results with their title, price in BRL as a number, product URL, and size/volume (e.g. 500ml, 1kg). Only include items with a valid price${volumeHint} Prioritize products whose size matches '${volume || 'any'}'.`;
-
-    try {
-      const extractResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
+    // Step 1: Use Firecrawl Search API to find real product pages
+    const searchResponse = await fetch('https://api.firecrawl.dev/v1/search', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query: searchQuery,
+        limit: 5,
+        lang: 'pt-br',
+        country: 'br',
+        scrapeOptions: {
+          formats: ['markdown'],
+          onlyMainContent: true,
         },
-        body: JSON.stringify({
-          url: amazonUrl,
-          formats: ['extract'],
-          extract: {
-            schema: {
-              type: 'object',
-              properties: {
-                products: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      title: { type: 'string', description: 'Product title' },
-                      price: { type: 'number', description: 'Product price in BRL (e.g. 24.50)' },
-                      url: { type: 'string', description: 'Product URL on Amazon' },
-                      volume: { type: 'string', description: 'Product size/volume/weight, e.g. 500ml, 1kg, 200g, 1L' },
-                    },
-                    required: ['title', 'price'],
-                  },
-                },
-              },
-              required: ['products'],
-            },
-            prompt: extractPrompt,
-          },
-          waitFor: 5000,
-        }),
-      });
+      }),
+    });
 
-      const extractData = await extractResponse.json();
-      console.log('Firecrawl extract response status:', extractResponse.status);
+    const searchData = await searchResponse.json();
+    console.log('Firecrawl search response status:', searchResponse.status);
 
-      if (!extractResponse.ok) {
-        console.error('Firecrawl extract error body:', JSON.stringify(extractData));
-      }
-
-      const extracted = extractData?.data?.extract || extractData?.extract;
-      if (extracted?.products && Array.isArray(extracted.products)) {
-        const allProducts = extracted.products
-          .filter((p: any) => p.title && typeof p.price === 'number' && p.price > 0)
-          .map((p: any) => ({
-            title: p.title,
-            price: p.price,
-            url: p.url || amazonUrl,
-            volume: p.volume || undefined,
-          }));
-
-        // Filter by volume compatibility
-        if (volume && allProducts.length > 0) {
-          const compatible = allProducts.filter((p: AmazonProduct) =>
-            isVolumeCompatible(p.volume || p.title, volume)
-          );
-          results = (compatible.length > 0 ? compatible : allProducts).slice(0, 5);
-          console.log(`Volume filter: ${compatible.length}/${allProducts.length} compatible with ${volume}`);
-        } else {
-          results = allProducts.slice(0, 5);
-        }
-      }
-    } catch (e) {
-      console.error('Extract failed, trying markdown fallback:', e);
+    if (!searchResponse.ok) {
+      console.error('Firecrawl search error:', JSON.stringify(searchData));
+      return new Response(
+        JSON.stringify({ success: false, error: searchData.error || 'Search failed' }),
+        { status: searchResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    // Fallback: markdown extraction
-    if (results.length === 0) {
-      try {
-        const mdResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            url: amazonUrl,
-            formats: ['markdown'],
-            waitFor: 5000,
-          }),
+    const searchResults = searchData?.data || [];
+    console.log(`Search returned ${searchResults.length} results`);
+
+    const results: AmazonProduct[] = [];
+
+    for (const result of searchResults) {
+      const url = result.url || '';
+      const title = result.title || result.metadata?.title || '';
+      const markdown = result.markdown || '';
+
+      // Skip non-product pages
+      if (!url.includes('amazon.com.br') || !title) continue;
+      // Prefer /dp/ product pages over search/listing pages
+      const isProductPage = url.includes('/dp/') || url.includes('/gp/product/');
+
+      // Extract price from the scraped markdown content
+      let price = extractPriceFromMarkdown(markdown);
+
+      // If price found from markdown of product page, use it
+      if (price && price > 0) {
+        const resultVolume = parseVolume(title) || undefined;
+        results.push({
+          title: title.substring(0, 200),
+          price,
+          url,
+          volume: resultVolume,
         });
-
-        const mdData = await mdResponse.json();
-        const markdown = mdData?.data?.markdown || mdData?.markdown || '';
-
-        if (markdown) {
-          results = parseMarkdownResults(markdown, volume);
-        }
-      } catch (e) {
-        console.error('Markdown fallback also failed:', e);
+        console.log(`Found: "${title.substring(0, 60)}" → R$${price} (${isProductPage ? 'product' : 'other'} page)`);
       }
     }
 
-    console.log(`Found ${results.length} results for "${product_name}"`);
+    // Filter by volume compatibility
+    let filteredResults = results;
+    if (volume && results.length > 0) {
+      const compatible = results.filter(r => isVolumeCompatible(r.volume || r.title, volume));
+      if (compatible.length > 0) {
+        filteredResults = compatible;
+        console.log(`Volume filter: ${compatible.length}/${results.length} compatible with ${volume}`);
+      }
+    }
+
+    // Sort by price ascending and take top 5
+    filteredResults.sort((a, b) => a.price - b.price);
+    const finalResults = filteredResults.slice(0, 5);
+
+    const searchUrl = `https://www.amazon.com.br/s?k=${encodeURIComponent(query)}`;
+    console.log(`Found ${finalResults.length} Amazon results for "${product_name}"`);
 
     return new Response(
-      JSON.stringify({ success: true, results, search_url: amazonUrl }),
+      JSON.stringify({ success: true, results: finalResults, search_url: searchUrl }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {
