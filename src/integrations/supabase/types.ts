@@ -63,8 +63,10 @@ export type Database = {
       }
       product_catalog: {
         Row: {
+          ai_category: string | null
           aliases: string[] | null
           avg_price: number | null
+          brand: string | null
           canonical_name: string
           category: string | null
           cheapest_supermarket_id: string | null
@@ -88,10 +90,13 @@ export type Database = {
           times_purchased: number | null
           unit: string | null
           updated_at: string
+          weight_g: number | null
         }
         Insert: {
+          ai_category?: string | null
           aliases?: string[] | null
           avg_price?: number | null
+          brand?: string | null
           canonical_name: string
           category?: string | null
           cheapest_supermarket_id?: string | null
@@ -115,10 +120,13 @@ export type Database = {
           times_purchased?: number | null
           unit?: string | null
           updated_at?: string
+          weight_g?: number | null
         }
         Update: {
+          ai_category?: string | null
           aliases?: string[] | null
           avg_price?: number | null
+          brand?: string | null
           canonical_name?: string
           category?: string | null
           cheapest_supermarket_id?: string | null
@@ -142,6 +150,7 @@ export type Database = {
           times_purchased?: number | null
           unit?: string | null
           updated_at?: string
+          weight_g?: number | null
         }
         Relationships: [
           {
