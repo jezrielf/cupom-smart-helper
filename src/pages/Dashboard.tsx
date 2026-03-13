@@ -58,6 +58,39 @@ export default function Dashboard() {
     },
   });
 
+  // Fetch recent products for AI analysis
+  const { data: recentProducts } = useQuery({
+    queryKey: ["recent-products-ai", user?.id],
+    enabled: !!user,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("product_name, product_name_normalized, unit_price, quantity, unit")
+        .eq("user_id", user!.id)
+        .order("purchase_date", { ascending: false })
+        .limit(30);
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  // Auto-trigger AI analysis when recent products are loaded
+  useEffect(() => {
+    if (recentProducts && recentProducts.length > 0 && suggestions.length === 0 && !analyzing) {
+      analyze(recentProducts, { showToasts: false }).then((result) => {
+        if (result?.suggestions) setSuggestions(result.suggestions);
+      });
+    }
+  }, [recentProducts]);
+
+  const handleRefreshAI = () => {
+    if (recentProducts && recentProducts.length > 0) {
+      analyze(recentProducts, { showToasts: false }).then((result) => {
+        if (result?.suggestions) setSuggestions(result.suggestions);
+      });
+    }
+  };
+
   const totalReceipts = receipts?.length ?? 0;
   const totalSpent = receipts?.reduce((s, r) => s + Number(r.total_amount), 0) ?? 0;
   const avgTicket = totalReceipts > 0 ? totalSpent / totalReceipts : 0;
