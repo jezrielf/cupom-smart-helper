@@ -71,8 +71,8 @@ function isVolumeCompatible(resultText: string | null, targetVolume: string | nu
   return ratio >= 0.8 && ratio <= 1.2;
 }
 
+// Fallback: extract first BRL price from markdown
 function extractFirstPrice(markdown: string): number | null {
-  // Extract the FIRST valid BRL price (not the minimum of all)
   const pattern = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/g;
   let m: RegExpExecArray | null;
   while ((m = pattern.exec(markdown)) !== null) {
@@ -89,15 +89,59 @@ function isProductPage(url: string): boolean {
   return url.includes('/dp/') || url.includes('/gp/product/');
 }
 
-function isListingPage(url: string): boolean {
-  return url.includes('/s?') || url.includes('/s/') || url.includes('/b/') || url.includes('/slp/');
-}
-
 interface AmazonProduct {
   title: string;
   price: number;
   url: string;
   volume?: string;
+}
+
+async function scrapeProductPrice(apiKey: string, url: string): Promise<{ title: string; price: number } | null> {
+  try {
+    console.log(`Scraping Amazon product: ${url.substring(0, 80)}`);
+    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        url,
+        formats: ['extract'],
+        extract: {
+          schema: {
+            type: 'object',
+            properties: {
+              titulo: { type: 'string', description: 'Título completo do produto' },
+              preco_atual: { type: 'number', description: 'Preço de venda atual em reais (número decimal, ex: 29.90). NÃO incluir preço de frete, parcela ou preço de outros vendedores. Apenas o preço principal do produto.' },
+              disponivel: { type: 'boolean', description: 'Se o produto está disponível para compra' },
+            },
+            required: ['titulo', 'preco_atual'],
+          },
+          prompt: 'Extraia o título completo do produto e o preço PRINCIPAL de venda atual em reais (R$). O preço deve ser o valor à vista do produto, NÃO o preço de frete, NÃO o valor da parcela, NÃO preços de outros vendedores. Converta para número decimal (ex: 29.90).',
+        },
+        onlyMainContent: true,
+        timeout: 15000,
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error('Scrape error:', response.status, JSON.stringify(data).substring(0, 200));
+      return null;
+    }
+
+    const extracted = data?.data?.extract || data?.extract;
+    if (extracted?.preco_atual && extracted.preco_atual > 1) {
+      console.log(`Scraped price: R$${extracted.preco_atual} — "${(extracted.titulo || '').substring(0, 60)}"`);
+      return { title: extracted.titulo || '', price: extracted.preco_atual };
+    }
+    console.log('Scrape returned no valid price');
+    return null;
+  } catch (err) {
+    console.error('Scrape exception:', err);
+    return null;
+  }
 }
 
 Deno.serve(async (req) => {
@@ -124,11 +168,11 @@ Deno.serve(async (req) => {
     }
 
     const { query, volume } = normalizeForSearch(product_name);
-    // Don't use site: operator - filter by domain in code instead
     const searchQuery = `${query} amazon.com.br`;
 
     console.log('Firecrawl search query:', searchQuery);
 
+    // STEP 1: Search for product URLs (1 credit)
     const searchResponse = await fetch('https://api.firecrawl.dev/v1/search', {
       method: 'POST',
       headers: {
@@ -137,21 +181,17 @@ Deno.serve(async (req) => {
       },
       body: JSON.stringify({
         query: searchQuery,
-        limit: 8,
+        limit: 5,
         lang: 'pt-br',
         country: 'br',
-        scrapeOptions: {
-          formats: ['markdown'],
-          onlyMainContent: true,
-        },
       }),
     });
 
     const searchData = await searchResponse.json();
-    console.log('Firecrawl response status:', searchResponse.status);
+    console.log('Search response status:', searchResponse.status);
 
     if (!searchResponse.ok) {
-      console.error('Firecrawl error:', JSON.stringify(searchData));
+      console.error('Search error:', JSON.stringify(searchData));
       return new Response(
         JSON.stringify({ success: false, error: searchData.error || 'Search failed' }),
         { status: searchResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -161,36 +201,68 @@ Deno.serve(async (req) => {
     const searchResults = searchData?.data || [];
     console.log(`Search returned ${searchResults.length} results`);
 
+    // Filter for Amazon product pages
+    const productUrls = searchResults.filter((r: any) => {
+      const url = r.url || '';
+      const isAmazon = url.includes('amazon.com.br');
+      const isProduct = isProductPage(url);
+      const isListing = url.includes('/s?') || url.includes('/s/') || url.includes('/b/') || url.includes('/slp/');
+      if (!isAmazon) console.log(`  Skipped (not amazon): ${url.substring(0, 80)}`);
+      else if (isListing) console.log(`  Skipped (listing): ${url.substring(0, 80)}`);
+      else if (!isProduct) console.log(`  Non-product URL: ${url.substring(0, 80)}`);
+      else console.log(`  ✓ Product URL: ${url.substring(0, 80)}`);
+      return isAmazon && isProduct && !isListing;
+    });
+
+    console.log(`Found ${productUrls.length} product URLs`);
+
+    // STEP 2: Scrape top product pages with JSON extraction (5 credits each)
     const results: AmazonProduct[] = [];
+    const urlsToScrape = productUrls.slice(0, 3);
 
-    // First pass: prioritize product pages (/dp/)
-    for (const result of searchResults) {
-      const url = result.url || '';
-      const title = result.title || result.metadata?.title || '';
-      const markdown = result.markdown || '';
+    for (const result of urlsToScrape) {
+      const url = result.url;
+      const scraped = await scrapeProductPrice(apiKey, url);
 
-      // Must be amazon.com.br
-      if (!url.includes('amazon.com.br') || !title) {
-        console.log(`Skipped (not amazon): ${url.substring(0, 80)}`);
-        continue;
-      }
-
-      // Skip listing/search pages
-      if (isListingPage(url)) {
-        console.log(`Skipped (listing page): ${url.substring(0, 80)}`);
-        continue;
-      }
-
-      const price = extractFirstPrice(markdown);
-      if (price && price > 0) {
-        const resultVolume = parseVolume(title) || undefined;
+      if (scraped) {
+        const resultVolume = parseVolume(scraped.title) || undefined;
         results.push({
-          title: title.substring(0, 200),
-          price,
-          url, // Direct product URL
+          title: scraped.title.substring(0, 200),
+          price: scraped.price,
+          url,
           volume: resultVolume,
         });
-        console.log(`Found: "${title.substring(0, 60)}" → R$${price} (${isProductPage(url) ? 'product' : 'other'} page) → ${url.substring(0, 80)}`);
+      } else {
+        // Fallback: try markdown price from search result
+        const markdown = result.markdown || '';
+        const fallbackPrice = extractFirstPrice(markdown);
+        if (fallbackPrice) {
+          const title = result.title || result.metadata?.title || '';
+          results.push({
+            title: title.substring(0, 200),
+            price: fallbackPrice,
+            url,
+            volume: parseVolume(title) || undefined,
+          });
+          console.log(`Fallback price for ${url.substring(0, 60)}: R$${fallbackPrice}`);
+        }
+      }
+    }
+
+    // Also try non-product Amazon URLs as fallback (with markdown extraction only)
+    if (results.length === 0) {
+      for (const result of searchResults) {
+        const url = result.url || '';
+        if (!url.includes('amazon.com.br') || isProductPage(url)) continue;
+        if (url.includes('/s?') || url.includes('/s/') || url.includes('/b/')) continue;
+        const markdown = result.markdown || '';
+        const price = extractFirstPrice(markdown);
+        if (price) {
+          const title = result.title || '';
+          results.push({ title: title.substring(0, 200), price, url, volume: parseVolume(title) || undefined });
+          console.log(`Fallback non-product: "${title.substring(0, 50)}" R$${price}`);
+          if (results.length >= 3) break;
+        }
       }
     }
 
@@ -204,13 +276,8 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Sort: product pages first, then by price
-    filteredResults.sort((a, b) => {
-      const aProduct = isProductPage(a.url) ? 0 : 1;
-      const bProduct = isProductPage(b.url) ? 0 : 1;
-      if (aProduct !== bProduct) return aProduct - bProduct;
-      return a.price - b.price;
-    });
+    // Sort by price
+    filteredResults.sort((a, b) => a.price - b.price);
 
     const finalResults = filteredResults.slice(0, 5);
     const searchUrl = `https://www.amazon.com.br/s?k=${encodeURIComponent(query)}`;
