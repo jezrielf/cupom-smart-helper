@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Search, ExternalLink, TrendingDown, TrendingUp, Minus, Globe, ShoppingCart, Loader2 } from "lucide-react";
+import { Search, ExternalLink, TrendingDown, TrendingUp, Minus, Globe, ShoppingCart, Loader2, Star, Zap, Tag } from "lucide-react";
 
 const formatBRL = (v: number) =>
   v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -17,6 +17,11 @@ interface OnlineResult {
   title: string;
   price: number;
   url: string;
+  is_prime?: boolean;
+  rating?: number;
+  reviews_count?: number;
+  discount_percent?: number;
+  image_url?: string;
 }
 
 interface ComparisonState {
@@ -93,7 +98,6 @@ export default function OnlineComparison() {
     ]);
   };
 
-  // Free-text search
   const [freeSearch, setFreeSearch] = useState("");
   const [freeSearching, setFreeSearching] = useState(false);
   const handleFreeSearch = async () => {
@@ -108,12 +112,11 @@ export default function OnlineComparison() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-foreground">Comparativo Online</h1>
-      <p className="text-muted-foreground text-sm">
+        <p className="text-muted-foreground text-sm">
           Compare preços do supermercado com Amazon e Mercado Livre
         </p>
       </div>
 
-      {/* Free-text search */}
       <Card>
         <CardContent className="pt-6">
           <div className="flex gap-2">
@@ -133,7 +136,6 @@ export default function OnlineComparison() {
             </Button>
           </div>
 
-          {/* Free search results */}
           {(comparisons[key(freeSearch.trim(), "amazon")] || comparisons[key(freeSearch.trim(), "ml")]) && (
             <div className="mt-4">
               <ComparisonTabs
@@ -147,7 +149,6 @@ export default function OnlineComparison() {
         </CardContent>
       </Card>
 
-      {/* Filter catalog */}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
@@ -365,11 +366,40 @@ function SourceResults({
         {state.results.map((r, i) => (
           <div
             key={i}
-            className="flex items-center justify-between gap-3 p-2 rounded-md bg-background border text-sm"
+            className="flex items-center gap-3 p-2 rounded-md bg-background border text-sm"
           >
+            {/* Product image */}
+            {r.image_url && (
+              <img
+                src={r.image_url}
+                alt=""
+                className="h-10 w-10 object-contain rounded flex-shrink-0"
+                loading="lazy"
+              />
+            )}
+
             <div className="flex-1 min-w-0">
               <p className="truncate text-foreground">{r.title}</p>
+              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                {r.is_prime && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
+                    <Zap className="h-3 w-3" /> Prime
+                  </span>
+                )}
+                {r.rating && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                    <Star className="h-3 w-3 fill-current" /> {r.rating.toFixed(1)}
+                    {r.reviews_count ? ` (${r.reviews_count.toLocaleString("pt-BR")})` : ""}
+                  </span>
+                )}
+                {r.discount_percent && r.discount_percent > 0 && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                    <Tag className="h-3 w-3" /> -{r.discount_percent}%
+                  </span>
+                )}
+              </div>
             </div>
+
             <span className="font-semibold text-foreground whitespace-nowrap">
               {formatBRL(r.price)}
             </span>

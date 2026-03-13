@@ -15,14 +15,14 @@ const ABBREVIATION_MAP: Record<string, string> = {
   'apar': 'aparelho', 'mist': 'mistura', 'past': 'pastilha',
   'tint': 'tintura', 'esc': 'escova', 'org': 'organico',
   'desc': 'descartavel', 'acond': 'acondicionador', 'deseng': 'desengraxante',
-  'multiuso': 'multiuso', 'limp': 'limpador', 'enxag': 'enxaguante',
-  'la': 'la de', 'aco': 'aco',
+  'limp': 'limpador', 'enxag': 'enxaguante',
+  'la': 'la de', 'aco': 'aco', 'po': 'po',
 };
 
 const PACKAGING_CODES = /\b(pc|pt|gl|fr|sc|tp|gr|cx|fd|bd|lt|un|dp|tb|env|fl|sq|pct|gar|sac)\b/g;
 const WEIGHT_VOLUME = /\b(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/gi;
 
-function normalizeForSearch(name: string): { query: string; volume: string | null } {
+function normalizeForSearch(name: string): { query: string; volume: string | null; brandWords: string[] } {
   let normalized = name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
   const volRegex = /\b(\d+([.,]\d+)?)\s*(g|kg|ml|l)\b/gi;
@@ -35,6 +35,13 @@ function normalizeForSearch(name: string): { query: string; volume: string | nul
   }
   const volume = volumeMatches.length > 0 ? volumeMatches[0] : null;
 
+  // Extract brand words BEFORE abbreviation expansion (typically 2nd or 3rd word)
+  const rawWords = normalized.replace(WEIGHT_VOLUME, ' ').replace(PACKAGING_CODES, ' ')
+    .replace(/[^a-z0-9\s]/g, '').trim().split(/\s+/).filter(w => w.length > 2);
+  // Brand is usually a proper noun — words that are NOT in abbreviation map and NOT generic
+  const genericWords = new Set(['com', 'para', 'sem', 'tipo', 'sabor', 'aroma', 'zero', 'light', 'diet']);
+  const brandWords = rawWords.filter(w => !ABBREVIATION_MAP[w] && !genericWords.has(w) && w.length > 3);
+
   normalized = normalized.replace(WEIGHT_VOLUME, ' ');
   normalized = normalized.replace(PACKAGING_CODES, ' ');
   normalized = normalized.replace(/\b([a-z]+)\b/g, (m) => ABBREVIATION_MAP[m] || m);
@@ -42,8 +49,8 @@ function normalizeForSearch(name: string): { query: string; volume: string | nul
   normalized = normalized.trim().replace(/\s+/g, ' ');
 
   const query = volume ? `${normalized} ${volume}` : normalized;
-  console.log(`Amazon search: "${name}" → "${query}" (volume: ${volume})`);
-  return { query, volume };
+  console.log(`Amazon search: "${name}" → "${query}" (volume: ${volume}, brands: ${brandWords.join(',')})`);
+  return { query, volume, brandWords };
 }
 
 function parseVolume(text: string): string | null {
@@ -71,47 +78,56 @@ function isVolumeCompatible(resultText: string | null, targetVolume: string | nu
   return ratio >= 0.8 && ratio <= 1.2;
 }
 
-function extractFirstPrice(markdown: string): number | null {
-  const pattern = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/g;
-  let m: RegExpExecArray | null;
-  while ((m = pattern.exec(markdown)) !== null) {
-    const priceStr = m[1].replace(/\./g, '').replace(',', '.');
-    const price = parseFloat(priceStr);
-    if (!isNaN(price) && price > 1 && price < 10000) {
-      return price;
-    }
-  }
-  return null;
-}
-
-function isProductPage(url: string): boolean {
-  return url.includes('/dp/') || url.includes('/gp/product/');
-}
-
-// Detect multi-pack quantity from title text via regex fallback
 function detectPackQuantity(title: string): number {
   const lower = title.toLowerCase();
   const patterns = [
-    /(\d+)\s*x\s*\d/i,                          // "20x45g" or "8 x 500ml"
-    /c\/?o?m?\s*(\d+)\s*(unid|un\b|und|pct|pacote|sach)/i,  // "com 20 unidades", "c/ 8 un"
-    /(\d+)\s*(unid|unidades)\b/i,                // "20 unidades"
-    /pack\s*(?:com|c\/)?\s*(\d+)/i,              // "pack com 12"
-    /fardo\s*(?:com|c\/)?\s*(\d+)/i,             // "fardo com 20"
-    /caixa\s*(?:com|c\/)?\s*(\d+)/i,             // "caixa com 14"
-    /kit\s*(?:com|c\/)?\s*(\d+)/i,               // "kit com 6"
+    /(\d+)\s*x\s*\d/i,
+    /c\/?o?m?\s*(\d+)\s*(unid|un\b|und|pct|pacote|sach)/i,
+    /(\d+)\s*(unid|unidades)\b/i,
+    /pack\s*(?:com|c\/)?\s*(\d+)/i,
+    /fardo\s*(?:com|c\/)?\s*(\d+)/i,
+    /caixa\s*(?:com|c\/)?\s*(\d+)/i,
+    /kit\s*(?:com|c\/)?\s*(\d+)/i,
     /(\d+)\s*(?:rolos|pares|sachets|saches|latas|garrafas|pacotes)\b/i,
   ];
   for (const p of patterns) {
     const m = lower.match(p);
     if (m) {
       const qty = parseInt(m[1], 10);
-      if (qty > 1 && qty <= 200) {
-        console.log(`  Pack detected via regex: ${qty} units in "${title.substring(0, 60)}"`);
-        return qty;
-      }
+      if (qty > 1 && qty <= 200) return qty;
     }
   }
   return 1;
+}
+
+// Relevance scoring: compare original product name keywords with result title
+function calculateRelevance(originalName: string, resultTitle: string, brandWords: string[]): number {
+  const normalize = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, '').trim().split(/\s+/).filter(w => w.length > 2);
+
+  const origWords = normalize(originalName);
+  const titleWords = normalize(resultTitle);
+  const titleText = titleWords.join(' ');
+
+  if (origWords.length === 0) return 0;
+
+  let matches = 0;
+  for (const w of origWords) {
+    if (titleText.includes(w)) matches++;
+  }
+
+  let score = matches / origWords.length;
+
+  // Brand bonus/penalty
+  for (const brand of brandWords) {
+    if (titleText.includes(brand)) {
+      score += 0.2; // brand match bonus
+    } else if (brandWords.length > 0) {
+      score -= 0.15; // brand mismatch penalty
+    }
+  }
+
+  return Math.max(0, Math.min(1, score));
 }
 
 interface AmazonProduct {
@@ -119,60 +135,12 @@ interface AmazonProduct {
   price: number;
   url: string;
   volume?: string;
-}
-
-async function scrapeProductPrice(apiKey: string, url: string): Promise<{ title: string; price: number; units: number } | null> {
-  try {
-    console.log(`Scraping Amazon product: ${url.substring(0, 80)}`);
-    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        url,
-        formats: ['extract'],
-        extract: {
-          schema: {
-            type: 'object',
-            properties: {
-              titulo: { type: 'string', description: 'Título completo do produto' },
-              preco_atual: { type: 'number', description: 'Preço de venda atual em reais (número decimal, ex: 29.90). NÃO incluir preço de frete, parcela ou preço de outros vendedores. Apenas o preço principal do produto.' },
-              quantidade_unidades: { type: 'number', description: 'Quantidade de unidades individuais contidas no produto. Se for um fardo/pack/caixa com múltiplas unidades (ex: "Pack com 20 unidades", "Caixa 14 pacotes", "Kit 8 unidades"), retorne a quantidade total de unidades individuais. Se for venda unitária (1 item apenas), retorne 1.' },
-              disponivel: { type: 'boolean', description: 'Se o produto está disponível para compra' },
-            },
-            required: ['titulo', 'preco_atual', 'quantidade_unidades'],
-          },
-          prompt: 'Extraia o título completo do produto, o preço PRINCIPAL de venda atual em reais (R$), e a QUANTIDADE DE UNIDADES individuais contidas. IMPORTANTE: Muitos produtos são vendidos em fardos, packs, caixas ou kits com múltiplas unidades. Verifique se o título ou descrição menciona "pack", "fardo", "caixa", "kit", "com X unidades", "X pacotes", etc. Se sim, retorne a quantidade total de unidades individuais no campo quantidade_unidades. Se for venda unitária (apenas 1 item), retorne 1. O preço deve ser o valor à vista, NÃO frete ou parcela.',
-        },
-        onlyMainContent: true,
-        timeout: 15000,
-      }),
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-      console.error('Scrape error:', response.status, JSON.stringify(data).substring(0, 200));
-      return null;
-    }
-
-    const extracted = data?.data?.extract || data?.extract;
-    if (extracted?.preco_atual && extracted.preco_atual > 1) {
-      const scrapedUnits = extracted.quantidade_unidades && extracted.quantidade_unidades > 1 ? extracted.quantidade_unidades : 1;
-      // Also check title with regex as fallback
-      const regexUnits = detectPackQuantity(extracted.titulo || '');
-      const units = Math.max(scrapedUnits, regexUnits);
-      
-      console.log(`Scraped: R$${extracted.preco_atual} × ${units} units — "${(extracted.titulo || '').substring(0, 60)}"`);
-      return { title: extracted.titulo || '', price: extracted.preco_atual, units };
-    }
-    console.log('Scrape returned no valid price');
-    return null;
-  } catch (err) {
-    console.error('Scrape exception:', err);
-    return null;
-  }
+  is_prime?: boolean;
+  rating?: number;
+  reviews_count?: number;
+  discount_percent?: number;
+  image_url?: string;
+  relevance?: number;
 }
 
 Deno.serve(async (req) => {
@@ -198,112 +166,110 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { query, volume } = normalizeForSearch(product_name);
-    const searchQuery = `${query} amazon.com.br`;
+    const { query, volume, brandWords } = normalizeForSearch(product_name);
+    const amazonSearchUrl = `https://www.amazon.com.br/s?k=${encodeURIComponent(query)}`;
 
-    console.log('Firecrawl search query:', searchQuery);
+    console.log('Scraping Amazon search page:', amazonSearchUrl);
 
-    const searchResponse = await fetch('https://api.firecrawl.dev/v1/search', {
+    // Single Firecrawl scrape call on the Amazon search results page
+    const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        query: searchQuery,
-        limit: 5,
-        lang: 'pt-br',
-        country: 'br',
+        url: amazonSearchUrl,
+        formats: ['extract'],
+        extract: {
+          schema: {
+            type: 'object',
+            properties: {
+              produtos: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    titulo: { type: 'string', description: 'Título completo do produto' },
+                    preco: { type: 'number', description: 'Preço à vista em reais (ex: 29.90). NÃO incluir frete ou parcela.' },
+                    url_relativa: { type: 'string', description: 'URL relativa do produto (ex: /dp/B08XYZ...)' },
+                    prime: { type: 'boolean', description: 'Se o produto tem selo Amazon Prime' },
+                    avaliacao: { type: 'number', description: 'Nota de avaliação de 0 a 5 (ex: 4.5)' },
+                    num_avaliacoes: { type: 'number', description: 'Número total de avaliações' },
+                    desconto_percent: { type: 'number', description: 'Percentual de desconto se houver (ex: 15)' },
+                    imagem_url: { type: 'string', description: 'URL da imagem do produto' },
+                    quantidade_unidades: { type: 'number', description: 'Quantidade de unidades no pack/fardo/kit. Se unitário, retorne 1.' },
+                  },
+                  required: ['titulo', 'preco'],
+                },
+              },
+            },
+            required: ['produtos'],
+          },
+          prompt: 'Extraia os primeiros 8 resultados de PRODUTOS da página de busca da Amazon. Para cada produto extraia: título completo, preço à vista em reais (NÃO frete, NÃO parcela, apenas o preço do produto), URL relativa (/dp/...), se tem Prime, nota de avaliação, número de avaliações, percentual de desconto, URL da imagem e quantidade de unidades se for pack/fardo/kit. IGNORE resultados patrocinados/propaganda. IGNORE resultados sem preço.',
+        },
+        timeout: 30000,
       }),
     });
 
-    const searchData = await searchResponse.json();
-    console.log('Search response status:', searchResponse.status);
+    const scrapeData = await scrapeResponse.json();
 
-    if (!searchResponse.ok) {
-      console.error('Search error:', JSON.stringify(searchData));
+    if (!scrapeResponse.ok) {
+      console.error('Scrape error:', scrapeResponse.status, JSON.stringify(scrapeData).substring(0, 300));
       return new Response(
-        JSON.stringify({ success: false, error: searchData.error || 'Search failed' }),
-        { status: searchResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ success: false, error: scrapeData.error || 'Scrape failed' }),
+        { status: scrapeResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const searchResults = searchData?.data || [];
-    console.log(`Search returned ${searchResults.length} results`);
-
-    const productUrls = searchResults.filter((r: any) => {
-      const url = r.url || '';
-      const isAmazon = url.includes('amazon.com.br');
-      const isProduct = isProductPage(url);
-      const isListing = url.includes('/s?') || url.includes('/s/') || url.includes('/b/') || url.includes('/slp/');
-      if (!isAmazon) console.log(`  Skipped (not amazon): ${url.substring(0, 80)}`);
-      else if (isListing) console.log(`  Skipped (listing): ${url.substring(0, 80)}`);
-      else if (!isProduct) console.log(`  Non-product URL: ${url.substring(0, 80)}`);
-      else console.log(`  ✓ Product URL: ${url.substring(0, 80)}`);
-      return isAmazon && isProduct && !isListing;
-    });
-
-    console.log(`Found ${productUrls.length} product URLs`);
+    const extracted = scrapeData?.data?.extract || scrapeData?.extract;
+    const rawProducts = extracted?.produtos || [];
+    console.log(`Extracted ${rawProducts.length} products from Amazon search page`);
 
     const results: AmazonProduct[] = [];
-    const urlsToScrape = productUrls.slice(0, 3);
 
-    for (const result of urlsToScrape) {
-      const url = result.url;
-      const scraped = await scrapeProductPrice(apiKey, url);
+    for (const p of rawProducts) {
+      if (!p.titulo || !p.preco || p.preco <= 0) continue;
 
-      if (scraped) {
-        const unitPrice = scraped.units > 1 ? scraped.price / scraped.units : scraped.price;
-        const titleSuffix = scraped.units > 1 ? ` (preço por unidade — pack c/ ${scraped.units})` : '';
-        const resultVolume = parseVolume(scraped.title) || undefined;
-        
-        console.log(`  Final unit price: R$${unitPrice.toFixed(2)} (${scraped.units} units)`);
-        results.push({
-          title: scraped.title.substring(0, 200) + titleSuffix,
-          price: Math.round(unitPrice * 100) / 100,
-          url,
-          volume: resultVolume,
-        });
-      } else {
-        const markdown = result.markdown || '';
-        const fallbackPrice = extractFirstPrice(markdown);
-        if (fallbackPrice) {
-          const title = result.title || result.metadata?.title || '';
-          const units = detectPackQuantity(title);
-          const unitPrice = units > 1 ? fallbackPrice / units : fallbackPrice;
-          const titleSuffix = units > 1 ? ` (preço por unidade — pack c/ ${units})` : '';
-          
-          results.push({
-            title: title.substring(0, 200) + titleSuffix,
-            price: Math.round(unitPrice * 100) / 100,
-            url,
-            volume: parseVolume(title) || undefined,
-          });
-          console.log(`Fallback price for ${url.substring(0, 60)}: R$${fallbackPrice} / ${units} = R$${unitPrice.toFixed(2)}`);
-        }
+      // Build full URL
+      let fullUrl = amazonSearchUrl;
+      if (p.url_relativa) {
+        fullUrl = p.url_relativa.startsWith('http')
+          ? p.url_relativa
+          : `https://www.amazon.com.br${p.url_relativa.startsWith('/') ? '' : '/'}${p.url_relativa}`;
       }
+
+      // Calculate unit price for packs
+      const scrapedUnits = p.quantidade_unidades && p.quantidade_unidades > 1 ? p.quantidade_unidades : 1;
+      const regexUnits = detectPackQuantity(p.titulo);
+      const units = Math.max(scrapedUnits, regexUnits);
+      const unitPrice = units > 1 ? p.preco / units : p.preco;
+      const titleSuffix = units > 1 ? ` (preço por unidade — pack c/ ${units})` : '';
+
+      // Calculate relevance
+      const relevance = calculateRelevance(product_name, p.titulo, brandWords);
+      console.log(`  "${p.titulo.substring(0, 50)}" → R$${unitPrice.toFixed(2)} (${units}un) relevance=${(relevance * 100).toFixed(0)}%`);
+
+      if (relevance < 0.3) {
+        console.log(`  ✗ Skipped (low relevance)`);
+        continue;
+      }
+
+      results.push({
+        title: p.titulo.substring(0, 200) + titleSuffix,
+        price: Math.round(unitPrice * 100) / 100,
+        url: fullUrl,
+        volume: parseVolume(p.titulo) || undefined,
+        is_prime: p.prime || false,
+        rating: p.avaliacao || undefined,
+        reviews_count: p.num_avaliacoes || undefined,
+        discount_percent: p.desconto_percent || undefined,
+        image_url: p.imagem_url || undefined,
+        relevance,
+      });
     }
 
-    // Fallback: non-product Amazon URLs
-    if (results.length === 0) {
-      for (const result of searchResults) {
-        const url = result.url || '';
-        if (!url.includes('amazon.com.br') || isProductPage(url)) continue;
-        if (url.includes('/s?') || url.includes('/s/') || url.includes('/b/')) continue;
-        const markdown = result.markdown || '';
-        const price = extractFirstPrice(markdown);
-        if (price) {
-          const title = result.title || '';
-          const units = detectPackQuantity(title);
-          const unitPrice = units > 1 ? price / units : price;
-          const titleSuffix = units > 1 ? ` (preço por unidade — pack c/ ${units})` : '';
-          results.push({ title: title.substring(0, 200) + titleSuffix, price: Math.round(unitPrice * 100) / 100, url, volume: parseVolume(title) || undefined });
-          console.log(`Fallback non-product: "${title.substring(0, 50)}" R$${price} / ${units} = R$${unitPrice.toFixed(2)}`);
-          if (results.length >= 3) break;
-        }
-      }
-    }
-
+    // Volume filter
     let filteredResults = results;
     if (volume && results.length > 0) {
       const compatible = results.filter(r => isVolumeCompatible(r.volume || r.title, volume));
@@ -313,14 +279,18 @@ Deno.serve(async (req) => {
       }
     }
 
-    filteredResults.sort((a, b) => a.price - b.price);
+    // Sort by relevance-weighted price (higher relevance = lower effective price)
+    filteredResults.sort((a, b) => {
+      const scoreA = a.price / (a.relevance || 0.5);
+      const scoreB = b.price / (b.relevance || 0.5);
+      return scoreA - scoreB;
+    });
 
     const finalResults = filteredResults.slice(0, 5);
-    const searchUrl = `https://www.amazon.com.br/s?k=${encodeURIComponent(query)}`;
     console.log(`Found ${finalResults.length} Amazon results for "${product_name}"`);
 
     return new Response(
-      JSON.stringify({ success: true, results: finalResults, search_url: searchUrl }),
+      JSON.stringify({ success: true, results: finalResults, search_url: amazonSearchUrl }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {
