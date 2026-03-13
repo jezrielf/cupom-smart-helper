@@ -17,6 +17,19 @@ const COLORS = ["hsl(var(--chart-1))", "hsl(var(--chart-2))", "hsl(var(--chart-3
 
 type SortOption = "name" | "price" | "savings";
 
+interface ProductGroup {
+  product_name_normalized: string;
+  supermarkets: {
+    supermarket_id: string;
+    supermarket_name: string;
+    last_price: number;
+    avg_price: number;
+    min_price: number;
+    max_price: number;
+    times_purchased: number;
+  }[];
+}
+
 export default function PriceComparison() {
   const [search, setSearch] = useState("");
   const [selectedProduct, setSelectedProduct] = useState<string | null>(null);
@@ -24,13 +37,25 @@ export default function PriceComparison() {
   const [sortBy, setSortBy] = useState<SortOption>("name");
   const isMobile = useIsMobile();
 
-  // Load ALL products automatically
-  const { data: comparison, isLoading } = useQuery({
-    queryKey: ["price-comparison-all"],
+  // Load products directly from products table (user's purchases)
+  const { data: products, isLoading } = useQuery({
+    queryKey: ["comparison-products"],
     queryFn: async () => {
-      const { data, error } = await supabase.rpc("get_price_comparison", {});
+      const { data, error } = await supabase
+        .from("products")
+        .select("product_name_normalized, unit_price, supermarket_id, purchase_date")
+        .order("product_name_normalized");
       if (error) throw error;
-      return data;
+      return data ?? [];
+    },
+  });
+
+  // Load supermarkets
+  const { data: supermarkets } = useQuery({
+    queryKey: ["supermarkets-all"],
+    queryFn: async () => {
+      const { data } = await supabase.from("supermarkets").select("id, name, brand_color, logo_url");
+      return data ?? [];
     },
   });
 
@@ -59,77 +84,94 @@ export default function PriceComparison() {
     },
   });
 
-  // Build catalog map
+  // Maps
+  const supermarketMap = useMemo(() => {
+    const map = new Map<string, { name: string; brand_color: string | null; logo_url: string | null }>();
+    supermarkets?.forEach((s) => map.set(s.id, { name: s.name, brand_color: s.brand_color, logo_url: s.logo_url }));
+    return map;
+  }, [supermarkets]);
+
   const catalogMap = useMemo(() => {
-    const map = new Map<string, (typeof catalog)[0]>();
+    const map = new Map<string, (typeof catalog extends (infer T)[] | null ? T : never)>();
     catalog?.forEach((c) => map.set(c.canonical_name, c));
     return map;
   }, [catalog]);
 
-  // Categories for filter
+  // Categories
   const categories = useMemo(() => {
     const cats = new Set<string>();
     catalog?.forEach((c) => { if (c.ai_category) cats.add(c.ai_category); });
     return Array.from(cats).sort();
   }, [catalog]);
 
-  // Group by product + filter + sort
-  const grouped = useMemo(() => {
-    if (!comparison) return [];
-    const map = new Map<string, typeof comparison>();
-    comparison.forEach((r) => {
-      const arr = map.get(r.product_name_normalized) ?? [];
-      arr.push(r);
-      map.set(r.product_name_normalized, arr);
+  // Group products by name + supermarket
+  const grouped = useMemo((): ProductGroup[] => {
+    if (!products?.length) return [];
+
+    const map = new Map<string, Map<string, { prices: number[]; count: number }>>();
+    products.forEach((p) => {
+      if (!p.supermarket_id) return;
+      let prodMap = map.get(p.product_name_normalized);
+      if (!prodMap) { prodMap = new Map(); map.set(p.product_name_normalized, prodMap); }
+      let entry = prodMap.get(p.supermarket_id);
+      if (!entry) { entry = { prices: [], count: 0 }; prodMap.set(p.supermarket_id, entry); }
+      entry.prices.push(Number(p.unit_price));
+      entry.count++;
     });
 
-    let entries = Array.from(map.entries());
+    let groups: ProductGroup[] = Array.from(map.entries()).map(([name, smMap]) => ({
+      product_name_normalized: name,
+      supermarkets: Array.from(smMap.entries()).map(([sid, data]) => ({
+        supermarket_id: sid,
+        supermarket_name: supermarketMap.get(sid)?.name ?? sid,
+        last_price: data.prices[data.prices.length - 1],
+        avg_price: data.prices.reduce((a, b) => a + b, 0) / data.prices.length,
+        min_price: Math.min(...data.prices),
+        max_price: Math.max(...data.prices),
+        times_purchased: data.count,
+      })),
+    }));
 
     // Text filter
     if (search) {
       const s = search.toLowerCase();
-      entries = entries.filter(([name]) => name.toLowerCase().includes(s));
+      groups = groups.filter((g) => g.product_name_normalized.toLowerCase().includes(s));
     }
 
     // Category filter
     if (categoryFilter !== "all") {
-      entries = entries.filter(([name]) => {
-        const cat = catalogMap.get(name);
-        return cat?.ai_category === categoryFilter;
-      });
+      groups = groups.filter((g) => catalogMap.get(g.product_name_normalized)?.ai_category === categoryFilter);
     }
 
     // Sort
-    entries.sort((a, b) => {
-      if (sortBy === "name") return a[0].localeCompare(b[0]);
+    groups.sort((a, b) => {
+      if (sortBy === "name") return a.product_name_normalized.localeCompare(b.product_name_normalized);
       if (sortBy === "price") {
-        const minA = Math.min(...a[1].map((r) => Number(r.last_price)));
-        const minB = Math.min(...b[1].map((r) => Number(r.last_price)));
+        const minA = Math.min(...a.supermarkets.map((s) => s.last_price));
+        const minB = Math.min(...b.supermarkets.map((s) => s.last_price));
         return minA - minB;
       }
-      // savings: biggest difference between max supermarket and best online
-      const savingsOf = ([name, rows]: [string, typeof comparison]) => {
-        const maxSuper = Math.max(...rows.map((r) => Number(r.last_price)));
-        const cat = catalogMap.get(name);
-        const bestOnline = Math.min(
-          ...[cat?.online_price, cat?.ml_price].filter((p): p is number => p != null && p > 0)
-        );
+      const savingsOf = (g: ProductGroup) => {
+        const maxSuper = Math.max(...g.supermarkets.map((s) => s.last_price));
+        const cat = catalogMap.get(g.product_name_normalized);
+        const onlinePrices = [cat?.online_price, cat?.ml_price].filter((p): p is number => p != null && p > 0);
+        const bestOnline = onlinePrices.length ? Math.min(...onlinePrices) : Infinity;
         return isFinite(bestOnline) ? maxSuper - bestOnline : 0;
       };
       return savingsOf(b) - savingsOf(a);
     });
 
-    return entries;
-  }, [comparison, search, categoryFilter, sortBy, catalogMap]);
+    return groups;
+  }, [products, supermarketMap, search, categoryFilter, sortBy, catalogMap]);
 
   // Chart data
   const chartData = useMemo(() => {
     if (!priceHistory?.length) return [];
-    const supermarkets = [...new Set(priceHistory.map((p) => p.supermarket_id))];
+    const sids = [...new Set(priceHistory.map((p) => p.supermarket_id))];
     const dates = [...new Set(priceHistory.map((p) => format(new Date(p.purchase_date), "dd/MM")))];
     return dates.map((d) => {
       const row: Record<string, unknown> = { date: d };
-      supermarkets.forEach((sid) => {
+      sids.forEach((sid) => {
         const entry = priceHistory.find((p) => format(new Date(p.purchase_date), "dd/MM") === d && p.supermarket_id === sid);
         if (entry) row[sid] = Number(entry.unit_price);
       });
@@ -138,13 +180,11 @@ export default function PriceComparison() {
   }, [priceHistory]);
 
   const chartSupermarkets = selectedProduct ? [...new Set(priceHistory?.map((p) => p.supermarket_id) ?? [])] : [];
-  const supermarketNames = new Map(comparison?.map((c) => [c.supermarket_id, c.supermarket_name]) ?? []);
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-foreground">Comparativo de Preços</h1>
 
-      {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -186,16 +226,15 @@ export default function PriceComparison() {
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">{grouped.length} produto(s) encontrado(s)</p>
 
-          {grouped.map(([product, rows]) => {
+          {grouped.map(({ product_name_normalized: product, supermarkets: rows }) => {
             const catEntry = catalogMap.get(product);
-            const minSuperPrice = Math.min(...rows.map((r) => Number(r.last_price)));
             const onlinePrices: { name: string; price: number; url: string | null }[] = [];
-            if (catEntry?.online_price && catEntry.online_price > 0)
+            if (catEntry?.online_price && Number(catEntry.online_price) > 0)
               onlinePrices.push({ name: "Amazon", price: Number(catEntry.online_price), url: catEntry.online_url });
-            if (catEntry?.ml_price && catEntry.ml_price > 0)
+            if (catEntry?.ml_price && Number(catEntry.ml_price) > 0)
               onlinePrices.push({ name: "Mercado Livre", price: Number(catEntry.ml_price), url: catEntry.ml_url });
 
-            const allPrices = [...rows.map((r) => Number(r.last_price)), ...onlinePrices.map((o) => o.price)];
+            const allPrices = [...rows.map((r) => r.last_price), ...onlinePrices.map((o) => o.price)];
             const globalMin = Math.min(...allPrices);
 
             return (
@@ -215,7 +254,6 @@ export default function PriceComparison() {
                 </CardHeader>
                 <CardContent className="overflow-x-auto">
                   {isMobile ? (
-                    /* Mobile: compact cards */
                     <div className="space-y-2">
                       {rows.map((r) => (
                         <div key={r.supermarket_id} className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
@@ -224,8 +262,8 @@ export default function PriceComparison() {
                             <span className="text-sm font-medium">{r.supermarket_name}</span>
                           </div>
                           <div className="flex items-center gap-2">
-                            <span className="text-sm font-semibold">{formatBRL(Number(r.last_price))}</span>
-                            {Number(r.last_price) === globalMin && (
+                            <span className="text-sm font-semibold">{formatBRL(r.last_price)}</span>
+                            {r.last_price === globalMin && (
                               <Badge className="bg-success/20 text-success border-0 text-[10px]">
                                 <TrendingDown className="h-3 w-3 mr-0.5" />Melhor
                               </Badge>
@@ -256,7 +294,6 @@ export default function PriceComparison() {
                       ))}
                     </div>
                   ) : (
-                    /* Desktop: full table */
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -275,17 +312,17 @@ export default function PriceComparison() {
                               <div className="flex items-center gap-2">
                                 <Store className="h-3.5 w-3.5 text-muted-foreground" />
                                 {r.supermarket_name}
-                                {Number(r.last_price) === globalMin && (
+                                {r.last_price === globalMin && (
                                   <Badge className="bg-success/20 text-success border-0 text-[10px]">
                                     <TrendingDown className="h-3 w-3 mr-0.5" />Melhor
                                   </Badge>
                                 )}
                               </div>
                             </TableCell>
-                            <TableCell className="text-right">{formatBRL(Number(r.last_price))}</TableCell>
-                            <TableCell className="text-right">{formatBRL(Number(r.avg_price))}</TableCell>
-                            <TableCell className="text-right">{formatBRL(Number(r.min_price))}</TableCell>
-                            <TableCell className="text-right">{formatBRL(Number(r.max_price))}</TableCell>
+                            <TableCell className="text-right">{formatBRL(r.last_price)}</TableCell>
+                            <TableCell className="text-right">{formatBRL(r.avg_price)}</TableCell>
+                            <TableCell className="text-right">{formatBRL(r.min_price)}</TableCell>
+                            <TableCell className="text-right">{formatBRL(r.max_price)}</TableCell>
                             <TableCell className="text-right">{r.times_purchased}</TableCell>
                           </TableRow>
                         ))}
@@ -322,7 +359,6 @@ export default function PriceComparison() {
             );
           })}
 
-          {/* Price History Chart */}
           {selectedProduct && chartData.length > 0 && (
             <Card className="border-border bg-card">
               <CardHeader className="pb-2">
@@ -337,7 +373,7 @@ export default function PriceComparison() {
                     <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, color: "hsl(var(--foreground))" }} formatter={(v: number) => formatBRL(v)} />
                     <Legend />
                     {chartSupermarkets.map((sid, i) => (
-                      <Line key={sid} type="monotone" dataKey={sid} name={supermarketNames.get(sid) ?? sid} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={{ r: 3 }} />
+                      <Line key={sid} type="monotone" dataKey={sid} name={supermarketMap.get(sid)?.name ?? sid} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={{ r: 3 }} />
                     ))}
                   </LineChart>
                 </ResponsiveContainer>

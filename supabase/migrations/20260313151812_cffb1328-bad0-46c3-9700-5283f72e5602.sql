@@ -1,0 +1,1 @@
+GRANT SELECT ON public.price_comparison_view TO anon, authenticated;
