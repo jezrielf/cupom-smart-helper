@@ -71,7 +71,6 @@ function isVolumeCompatible(resultText: string | null, targetVolume: string | nu
   return ratio >= 0.8 && ratio <= 1.2;
 }
 
-// Fallback: extract first BRL price from markdown
 function extractFirstPrice(markdown: string): number | null {
   const pattern = /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/g;
   let m: RegExpExecArray | null;
@@ -89,6 +88,32 @@ function isProductPage(url: string): boolean {
   return /\/p\/ML[A-Z]/.test(url);
 }
 
+// Detect multi-pack quantity from title text via regex fallback
+function detectPackQuantity(title: string): number {
+  const lower = title.toLowerCase();
+  const patterns = [
+    /(\d+)\s*x\s*\d/i,                          // "20x45g" or "8 x 500ml"
+    /c\/?o?m?\s*(\d+)\s*(unid|un\b|und|pct|pacote|sach)/i,  // "com 20 unidades", "c/ 8 un"
+    /(\d+)\s*(unid|unidades)\b/i,                // "20 unidades"
+    /pack\s*(?:com|c\/)?\s*(\d+)/i,              // "pack com 12"
+    /fardo\s*(?:com|c\/)?\s*(\d+)/i,             // "fardo com 20"
+    /caixa\s*(?:com|c\/)?\s*(\d+)/i,             // "caixa com 14"
+    /kit\s*(?:com|c\/)?\s*(\d+)/i,               // "kit com 6"
+    /(\d+)\s*(?:rolos|pares|sachets|saches|latas|garrafas|pacotes)\b/i,
+  ];
+  for (const p of patterns) {
+    const m = lower.match(p);
+    if (m) {
+      const qty = parseInt(m[1], 10);
+      if (qty > 1 && qty <= 200) {
+        console.log(`  Pack detected via regex: ${qty} units in "${title.substring(0, 60)}"`);
+        return qty;
+      }
+    }
+  }
+  return 1;
+}
+
 interface MLProduct {
   title: string;
   price: number;
@@ -96,7 +121,7 @@ interface MLProduct {
   volume?: string;
 }
 
-async function scrapeProductPrice(apiKey: string, url: string): Promise<{ title: string; price: number } | null> {
+async function scrapeProductPrice(apiKey: string, url: string): Promise<{ title: string; price: number; units: number } | null> {
   try {
     console.log(`Scraping ML product: ${url.substring(0, 80)}`);
     const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
@@ -114,11 +139,12 @@ async function scrapeProductPrice(apiKey: string, url: string): Promise<{ title:
             properties: {
               titulo: { type: 'string', description: 'Título completo do anúncio/produto' },
               preco_atual: { type: 'number', description: 'Preço de venda atual em reais (número decimal, ex: 29.90). NÃO incluir preço de frete ou valor de parcela. Apenas o preço principal à vista do produto.' },
+              quantidade_unidades: { type: 'number', description: 'Quantidade de unidades individuais contidas no produto. Se for um fardo/pack/caixa com múltiplas unidades (ex: "Pack com 20 unidades", "Caixa 14 pacotes", "Kit 8 unidades"), retorne a quantidade total de unidades individuais. Se for venda unitária (1 item apenas), retorne 1.' },
               disponivel: { type: 'boolean', description: 'Se o produto está disponível para compra' },
             },
-            required: ['titulo', 'preco_atual'],
+            required: ['titulo', 'preco_atual', 'quantidade_unidades'],
           },
-          prompt: 'Extraia o título completo do produto e o preço PRINCIPAL de venda atual em reais (R$). O preço deve ser o valor à vista do produto, NÃO o preço de frete, NÃO o valor da parcela mensal. Converta para número decimal (ex: 29.90).',
+          prompt: 'Extraia o título completo do produto, o preço PRINCIPAL de venda atual em reais (R$), e a QUANTIDADE DE UNIDADES individuais contidas. IMPORTANTE: Muitos produtos são vendidos em fardos, packs, caixas ou kits com múltiplas unidades. Verifique se o título ou descrição menciona "pack", "fardo", "caixa", "kit", "com X unidades", "X pacotes", etc. Se sim, retorne a quantidade total de unidades individuais no campo quantidade_unidades. Se for venda unitária (apenas 1 item), retorne 1. O preço deve ser o valor à vista, NÃO frete ou parcela.',
         },
         waitFor: 2500,
         onlyMainContent: true,
@@ -134,8 +160,12 @@ async function scrapeProductPrice(apiKey: string, url: string): Promise<{ title:
 
     const extracted = data?.data?.extract || data?.extract;
     if (extracted?.preco_atual && extracted.preco_atual > 1) {
-      console.log(`Scraped price: R$${extracted.preco_atual} — "${(extracted.titulo || '').substring(0, 60)}"`);
-      return { title: extracted.titulo || '', price: extracted.preco_atual };
+      const scrapedUnits = extracted.quantidade_unidades && extracted.quantidade_unidades > 1 ? extracted.quantidade_unidades : 1;
+      const regexUnits = detectPackQuantity(extracted.titulo || '');
+      const units = Math.max(scrapedUnits, regexUnits);
+      
+      console.log(`Scraped: R$${extracted.preco_atual} × ${units} units — "${(extracted.titulo || '').substring(0, 60)}"`);
+      return { title: extracted.titulo || '', price: extracted.preco_atual, units };
     }
     console.log('Scrape returned no valid price');
     return null;
@@ -173,7 +203,6 @@ Deno.serve(async (req) => {
 
     console.log('Firecrawl search query:', searchQuery);
 
-    // STEP 1: Search for product URLs (1 credit)
     const searchResponse = await fetch('https://api.firecrawl.dev/v1/search', {
       method: 'POST',
       headers: {
@@ -202,7 +231,6 @@ Deno.serve(async (req) => {
     const searchResults = searchData?.data || [];
     console.log(`Search returned ${searchResults.length} results`);
 
-    // Filter for ML product pages
     const productUrls = searchResults.filter((r: any) => {
       const url = r.url || '';
       const isML = url.includes('mercadolivre.com.br') || url.includes('mercadolibre.com');
@@ -217,7 +245,6 @@ Deno.serve(async (req) => {
 
     console.log(`Found ${productUrls.length} product URLs`);
 
-    // STEP 2: Scrape top product pages with JSON extraction (5 credits each)
     const results: MLProduct[] = [];
     const urlsToScrape = productUrls.slice(0, 3);
 
@@ -226,31 +253,38 @@ Deno.serve(async (req) => {
       const scraped = await scrapeProductPrice(apiKey, url);
 
       if (scraped) {
+        const unitPrice = scraped.units > 1 ? scraped.price / scraped.units : scraped.price;
+        const titleSuffix = scraped.units > 1 ? ` (preço por unidade — pack c/ ${scraped.units})` : '';
         const resultVolume = parseVolume(scraped.title) || undefined;
+        
+        console.log(`  Final unit price: R$${unitPrice.toFixed(2)} (${scraped.units} units)`);
         results.push({
-          title: scraped.title.substring(0, 200),
-          price: scraped.price,
+          title: scraped.title.substring(0, 200) + titleSuffix,
+          price: Math.round(unitPrice * 100) / 100,
           url,
           volume: resultVolume,
         });
       } else {
-        // Fallback: try markdown price from search result
         const markdown = result.markdown || '';
         const fallbackPrice = extractFirstPrice(markdown);
         if (fallbackPrice) {
           const title = result.title || result.metadata?.title || '';
+          const units = detectPackQuantity(title);
+          const unitPrice = units > 1 ? fallbackPrice / units : fallbackPrice;
+          const titleSuffix = units > 1 ? ` (preço por unidade — pack c/ ${units})` : '';
+          
           results.push({
-            title: title.substring(0, 200),
-            price: fallbackPrice,
+            title: title.substring(0, 200) + titleSuffix,
+            price: Math.round(unitPrice * 100) / 100,
             url,
             volume: parseVolume(title) || undefined,
           });
-          console.log(`Fallback price for ${url.substring(0, 60)}: R$${fallbackPrice}`);
+          console.log(`Fallback price for ${url.substring(0, 60)}: R$${fallbackPrice} / ${units} = R$${unitPrice.toFixed(2)}`);
         }
       }
     }
 
-    // Also try non-product ML URLs as fallback (markdown only)
+    // Fallback: non-product ML URLs
     if (results.length === 0) {
       for (const result of searchResults) {
         const url = result.url || '';
@@ -261,14 +295,16 @@ Deno.serve(async (req) => {
         const price = extractFirstPrice(markdown);
         if (price) {
           const title = result.title || '';
-          results.push({ title: title.substring(0, 200), price, url, volume: parseVolume(title) || undefined });
-          console.log(`Fallback non-product: "${title.substring(0, 50)}" R$${price}`);
+          const units = detectPackQuantity(title);
+          const unitPrice = units > 1 ? price / units : price;
+          const titleSuffix = units > 1 ? ` (preço por unidade — pack c/ ${units})` : '';
+          results.push({ title: title.substring(0, 200) + titleSuffix, price: Math.round(unitPrice * 100) / 100, url, volume: parseVolume(title) || undefined });
+          console.log(`Fallback non-product: "${title.substring(0, 50)}" R$${price} / ${units} = R$${unitPrice.toFixed(2)}`);
           if (results.length >= 3) break;
         }
       }
     }
 
-    // Filter by volume compatibility
     let filteredResults = results;
     if (volume && results.length > 0) {
       const compatible = results.filter(r => isVolumeCompatible(r.volume || r.title, volume));
@@ -278,7 +314,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Sort by price
     filteredResults.sort((a, b) => a.price - b.price);
 
     const finalResults = filteredResults.slice(0, 5);
