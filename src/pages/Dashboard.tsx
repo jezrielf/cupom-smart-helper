@@ -191,6 +191,13 @@ export default function Dashboard() {
         ))}
       </div>
 
+      {/* AI Suggestions */}
+      <AISuggestions
+        suggestions={suggestions}
+        loading={analyzing}
+        onRefresh={handleRefreshAI}
+      />
+
       {/* Charts */}
       <div className="grid md:grid-cols-2 gap-6">
         <Card className="border-border bg-card">
