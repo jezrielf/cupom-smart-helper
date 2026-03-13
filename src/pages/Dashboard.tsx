@@ -19,6 +19,8 @@ const formatBRL = (v: number) =>
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const { analyze, analyzing, lastResult } = useAIProductIntelligence();
+  const [suggestions, setSuggestions] = useState<AISuggestion[]>([]);
 
   const { data: receipts, isLoading: loadingReceipts } = useQuery({
     queryKey: ["receipts-dashboard", user?.id],
