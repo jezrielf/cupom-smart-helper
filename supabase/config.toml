@@ -8,3 +8,9 @@ verify_jwt = false
 
 [functions.search-ifood]
 verify_jwt = false
+
+[functions.search-amazon]
+verify_jwt = false
+
+[functions.ai-product-intelligence]
+verify_jwt = false
