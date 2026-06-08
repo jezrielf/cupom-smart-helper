@@ -10,7 +10,7 @@ function normalize(text: string): string {
   return text
     .toUpperCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[̀-ͯ]/g, "")
     .trim();
 }
 
@@ -18,60 +18,10 @@ function stripTags(html: string): string {
   return html.replace(/<[^>]*>/g, "").trim();
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ---------- Firecrawl extract with retry ----------
-
-const FIRECRAWL_SCHEMA = {
-  type: "object",
-  properties: {
-    emitter_name: { type: "string" },
-    emitter_cnpj: { type: "string" },
-    emitter_address: { type: "string" },
-    purchase_date: { type: "string" },
-    access_key: { type: "string" },
-    products: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          code: { type: "string" },
-          name: { type: "string" },
-          quantity: { type: "number" },
-          unit: { type: "string" },
-          unit_price: { type: "number" },
-          total_price: { type: "number" },
-        },
-      },
-    },
-    total_amount: { type: "number" },
-    total_discount: { type: "number" },
-    payment_method: { type: "string" },
-  },
-};
-
-const FIRECRAWL_PROMPT =
-  "Extraia os dados desta nota fiscal eletrônica (NFC-e) brasileira. Inclua TODOS os produtos listados com nome, código, quantidade, unidade (UN, KG, etc), preço unitário e preço total. O CNPJ deve conter apenas dígitos (sem pontos, barras ou hífens). A data de compra deve estar no formato DD/MM/AAAA HH:MM:SS. A chave de acesso tem 44 dígitos numéricos.";
-
-interface FirecrawlResult {
-  access_key: string;
-  emitter: { name: string; cnpj: string; address: string };
-  purchase_date: string;
-  products: Array<{
-    product_code: string;
-    product_name: string;
-    product_name_normalized: string;
-    quantity: number;
-    unit: string;
-    unit_price: number;
-    total_price: number;
-  }>;
-  total_amount: number;
-  total_discount: number;
-  payment_method: string;
-  item_count: number;
+function parseBrNumber(s: string): number {
+  if (!s) return 0;
+  const clean = s.replace(/\./g, "").replace(",", ".");
+  return parseFloat(clean) || 0;
 }
 
 function parsePurchaseDate(dateStr: string | undefined): string {
@@ -79,198 +29,164 @@ function parsePurchaseDate(dateStr: string | undefined): string {
   const parts = dateStr.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):?(\d{2})?/);
   if (!parts) return new Date().toISOString();
   return new Date(
-    parseInt(parts[3]), parseInt(parts[2]) - 1, parseInt(parts[1]),
-    parseInt(parts[4]), parseInt(parts[5]), parseInt(parts[6] || "0")
+    parseInt(parts[3]),
+    parseInt(parts[2]) - 1,
+    parseInt(parts[1]),
+    parseInt(parts[4]),
+    parseInt(parts[5]),
+    parseInt(parts[6] || "0")
   ).toISOString();
 }
 
-function buildResultFromExtracted(extracted: any): FirecrawlResult | null {
-  if (!extracted?.products || extracted.products.length === 0) return null;
-
-  const products = extracted.products.map((p: any) => ({
-    product_code: p.code || "",
-    product_name: p.name || "",
-    product_name_normalized: normalize(p.name || ""),
-    quantity: p.quantity || 1,
-    unit: p.unit || "UN",
-    unit_price: p.unit_price || 0,
-    total_price: p.total_price || (p.quantity || 1) * (p.unit_price || 0),
-  }));
-
-  return {
-    access_key: (extracted.access_key || "").replace(/\D/g, ""),
-    emitter: {
-      name: extracted.emitter_name || "",
-      cnpj: (extracted.emitter_cnpj || "").replace(/\D/g, ""),
-      address: extracted.emitter_address || "",
-    },
-    purchase_date: parsePurchaseDate(extracted.purchase_date),
-    products,
-    total_amount: extracted.total_amount || products.reduce((s: number, p: any) => s + p.total_price, 0),
-    total_discount: extracted.total_discount || 0,
-    payment_method: extracted.payment_method || "",
-    item_count: products.length,
-  };
+interface Product {
+  product_code: string;
+  product_name: string;
+  product_name_normalized: string;
+  quantity: number;
+  unit: string;
+  unit_price: number;
+  total_price: number;
 }
 
-async function tryFirecrawlExtract(
-  url: string,
-  apiKey: string,
-  maxRetries = 2
-): Promise<FirecrawlResult | null> {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    console.log(`Firecrawl extract attempt ${attempt}/${maxRetries} for: ${url}`);
-    try {
-      const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          url,
-          formats: ["extract"],
-          extract: { schema: FIRECRAWL_SCHEMA, prompt: FIRECRAWL_PROMPT },
-          waitFor: 5000,
-          timeout: attempt === 1 ? 30000 : 20000,
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const extracted = data.data?.extract || data.extract;
-        console.log("Firecrawl extraction result:", JSON.stringify(extracted));
-        const result = buildResultFromExtracted(extracted);
-        if (result) {
-          console.log(`Firecrawl extract successful: ${result.item_count} products`);
-          return result;
-        }
-        console.warn("Firecrawl returned OK but no products found in extraction");
-      } else {
-        console.warn(`Firecrawl attempt ${attempt} failed with status: ${response.status}`);
-      }
-    } catch (err) {
-      console.warn(`Firecrawl attempt ${attempt} error:`, err);
-    }
-
-    // Wait before retry (skip wait on last attempt)
-    if (attempt < maxRetries) {
-      console.log("Waiting 2s before retry...");
-      await sleep(2000);
-    }
-  }
-
-  return null;
+interface ParsedNfce {
+  access_key: string;
+  emitter: { name: string; cnpj: string; address: string };
+  purchase_date: string;
+  products: Product[];
+  total_amount: number;
+  total_discount: number;
+  payment_method: string;
+  item_count: number;
 }
 
-// ---------- HTML regex parser (fallback) ----------
+// ---------- Markdown parser ----------
 
-function parseNfceHtml(html: string): FirecrawlResult {
-  // Extract access key
-  const accessKeyMatch = html.match(/Chave de acesso[^<]*<[^>]*>[\s\S]*?(\d{44})/i) ||
-    html.match(/(\d{44})/);
-  const accessKey = accessKeyMatch ? accessKeyMatch[1] : "";
+function parseNfceMarkdown(markdown: string): ParsedNfce {
+  const products: Product[] = [];
 
-  // Emitter name
+  // Access key
+  const accessKeyMatch =
+    markdown.match(/Chave de acesso[^:\n]*:?\s*[\n\s]*([\d\s]{44,55})/) ||
+    markdown.match(/(\d{44})/);
+  const accessKey = accessKeyMatch
+    ? accessKeyMatch[1].replace(/\s/g, "").slice(0, 44)
+    : "";
+
+  // Emitter
   let emitterName = "";
-  const nameMatch = html.match(/<div[^>]*class="txtTopo"[^>]*>([\s\S]*?)<\/div>/i);
-  if (nameMatch) emitterName = stripTags(nameMatch[1]).trim();
-  if (!emitterName) {
-    const nameMatch2 = html.match(/Razão Social[^:]*:\s*([^<\n]+)/i) ||
-      html.match(/<div[^>]*NFCe_Emitente[^>]*>[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/i);
-    if (nameMatch2) emitterName = stripTags(nameMatch2[1]).trim();
-  }
+  const nameMatch =
+    markdown.match(/^#\s+(.+)/m) ||
+    markdown.match(/Raz[aã]o Social[^:]*:\s*([^\n]+)/i) ||
+    markdown.match(/\*\*([^*]+)\*\*/);
+  if (nameMatch) emitterName = nameMatch[1].trim();
 
-  // CNPJ
   let cnpj = "";
-  const cnpjMatch = html.match(/CNPJ:\s*([\d.\/\-]+)/i) ||
-    html.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
+  const cnpjMatch =
+    markdown.match(/CNPJ[:\s]+([\d.\/-]+)/i) ||
+    markdown.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
   if (cnpjMatch) cnpj = cnpjMatch[1].replace(/[.\/-]/g, "");
 
-  // Address
   let address = "";
-  const addrMatch = html.match(/Endere[cç]o[^:]*:\s*([^<\n]+)/i);
-  if (addrMatch) address = stripTags(addrMatch[1]).trim();
+  const addrMatch = markdown.match(/Endere[cç]o[^:]*:\s*([^\n]+)/i);
+  if (addrMatch) address = addrMatch[1].trim();
 
-  // Purchase date
   let purchaseDate = new Date().toISOString();
-  const dateMatch = html.match(/Emiss[aã]o:\s*([\d\/]+\s+[\d:]+)/i) ||
-    html.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
-  if (dateMatch) {
-    const dateStr = dateMatch[1] || `${dateMatch[1]} ${dateMatch[2]}`;
-    purchaseDate = parsePurchaseDate(dateStr);
-  }
+  const dateMatch =
+    markdown.match(/Emiss[aã]o[^:]*:\s*([\d\/]+ [\d:]+)/i) ||
+    markdown.match(/Data[^:]*:\s*([\d\/]+ [\d:]+)/i) ||
+    markdown.match(/(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2})/);
+  if (dateMatch) purchaseDate = parsePurchaseDate(dateMatch[1]);
 
-  // Products - table rows
-  const products: FirecrawlResult["products"] = [];
+  // Markdown table rows: | col1 | col2 | col3 | col4 | col5 | col6 |
+  const tableRowRegex = /^\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|/gm;
+  let m: RegExpExecArray | null;
+  while ((m = tableRowRegex.exec(markdown)) !== null) {
+    const cols = [m[1], m[2], m[3], m[4], m[5], m[6]].map((c) => c.trim());
+    // Skip header/separator rows
+    if (cols.some((c) => /^[-:]+$/.test(c)) || cols[0].toLowerCase().includes("c[oó]d")) continue;
 
-  const productBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
-  for (const block of productBlocks) {
-    const cols = block.match(/<td[^>]*>([\s\S]*?)<\/td>/gi);
-    if (!cols || cols.length < 4) continue;
-    const texts = cols.map((c) => stripTags(c).trim());
-    const nameCandidate = texts[0];
-    const qtyCandidate = parseFloat(texts[1]?.replace(",", ".") || "");
-    const unitPriceCandidate = parseFloat(texts[2]?.replace(",", ".") || "");
-    const totalCandidate = parseFloat(texts[3]?.replace(",", ".") || "");
-    if (nameCandidate && !isNaN(qtyCandidate) && !isNaN(unitPriceCandidate) && !isNaN(totalCandidate)) {
-      const codeMatch = nameCandidate.match(/^\((\d+)\)\s*/);
-      const code = codeMatch ? codeMatch[1] : "";
-      const name = codeMatch ? nameCandidate.replace(codeMatch[0], "") : nameCandidate;
-      products.push({
-        product_code: code,
-        product_name: name.trim(),
-        product_name_normalized: normalize(name),
-        quantity: qtyCandidate,
-        unit: "UN",
-        unit_price: unitPriceCandidate,
-        total_price: totalCandidate,
-      });
-    }
-  }
-
-  // Span-based layout fallback
-  if (products.length === 0) {
-    const spanBlocks = html.match(/class="txtTit"[^>]*>([\s\S]*?)(?=class="txtTit"|id="linhaTotal"|$)/gi) || [];
-    for (const block of spanBlocks) {
-      const nm = block.match(/class="txtTit"[^>]*>([\s\S]*?)<\/span>/i);
-      const qm = block.match(/Qtde\.?:?\s*([\d.,]+)/i);
-      const um = block.match(/UN\.?:?\s*(\w+)/i);
-      const upm = block.match(/Vl\.?\s*Unit\.?:?\s*R?\$?\s*([\d.,]+)/i);
-      const tm = block.match(/Vl\.?\s*Total:?\s*R?\$?\s*([\d.,]+)/i);
-      if (nm && qm && upm) {
-        const name = stripTags(nm[1]).trim();
-        const codeMatch = name.match(/^\((\d+)\)\s*/);
-        const code = codeMatch ? codeMatch[1] : "";
-        const cleanName = codeMatch ? name.replace(codeMatch[0], "") : name;
-        products.push({
-          product_code: code,
-          product_name: cleanName.trim(),
-          product_name_normalized: normalize(cleanName),
-          quantity: parseFloat(qm[1].replace(",", ".")),
-          unit: um ? um[1] : "UN",
-          unit_price: parseFloat(upm[1].replace(",", ".")),
-          total_price: tm
-            ? parseFloat(tm[1].replace(",", "."))
-            : parseFloat(qm[1].replace(",", ".")) * parseFloat(upm[1].replace(",", ".")),
-        });
+    // Try to identify columns — look for numeric values
+    const nums = cols.map((c) => parseBrNumber(c));
+    // Heuristic: name is the longest non-numeric column
+    let nameIdx = -1;
+    let maxLen = 0;
+    cols.forEach((c, i) => {
+      if (isNaN(nums[i]) || nums[i] === 0) {
+        if (c.length > maxLen) { maxLen = c.length; nameIdx = i; }
       }
+    });
+    if (nameIdx === -1) continue;
+
+    const name = cols[nameIdx];
+    if (name.length < 2) continue;
+
+    // Find qty, unit_price, total (last two numerics tend to be prices)
+    const numericCols = cols.map((c, i) => ({ i, v: parseBrNumber(c) })).filter((x) => x.v > 0);
+    if (numericCols.length < 2) continue;
+
+    const qty = numericCols[0]?.v || 1;
+    const unitPrice = numericCols[numericCols.length - 2]?.v || 0;
+    const total = numericCols[numericCols.length - 1]?.v || qty * unitPrice;
+
+    // Unit column
+    const unitIdx = cols.findIndex((c, i) => i !== nameIdx && /^(UN|KG|LT|PC|CX|MT|GR|ML|G\b)/i.test(c.trim()));
+    const unit = unitIdx >= 0 ? cols[unitIdx].trim().toUpperCase() : "UN";
+
+    // Code
+    const codeIdx = cols.findIndex((c, i) => i !== nameIdx && /^\d+$/.test(c.trim()) && c.trim().length <= 13);
+    const code = codeIdx >= 0 ? cols[codeIdx].trim() : "";
+
+    const cleanName = name.replace(/^\(?\d+\)?\s*/, "").trim();
+    products.push({
+      product_code: code,
+      product_name: cleanName,
+      product_name_normalized: normalize(cleanName),
+      quantity: qty,
+      unit,
+      unit_price: unitPrice,
+      total_price: total,
+    });
+  }
+
+  // Inline product pattern: "NOME QTD UN R$ PRICE"
+  if (products.length === 0) {
+    const inlineRegex =
+      /([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ0-9 .\/\-]{3,})\s+([\d,]+)\s+(UN|KG|LT|PC|CX|MT|GR|ML)\s+(?:R\$\s*)?([\d.,]+)\s+(?:R\$\s*)?([\d.,]+)/gi;
+    while ((m = inlineRegex.exec(markdown)) !== null) {
+      const name = m[1].trim();
+      const qty = parseBrNumber(m[2]);
+      const unit = m[3].toUpperCase();
+      const unitPrice = parseBrNumber(m[4]);
+      const total = parseBrNumber(m[5]);
+      products.push({
+        product_code: "",
+        product_name: name,
+        product_name_normalized: normalize(name),
+        quantity: qty,
+        unit,
+        unit_price: unitPrice,
+        total_price: total,
+      });
     }
   }
 
   // Totals
   let totalAmount = 0;
-  const totalMatch = html.match(/Valor\s*total\s*R?\$?\s*([\d.,]+)/i) ||
-    html.match(/TOTAL\s*R?\$?\s*([\d.,]+)/i);
-  if (totalMatch) totalAmount = parseFloat(totalMatch[1].replace(".", "").replace(",", "."));
-  if (!totalAmount && products.length > 0) totalAmount = products.reduce((s, p) => s + p.total_price, 0);
+  const totalMatch =
+    markdown.match(/Valor\s*[Tt]otal[^R\d]*(R\$\s*)?([\d.,]+)/i) ||
+    markdown.match(/TOTAL[^R\d]*(R\$\s*)?([\d.,]+)/i);
+  if (totalMatch) totalAmount = parseBrNumber(totalMatch[2] || totalMatch[1]);
+  if (!totalAmount && products.length > 0)
+    totalAmount = products.reduce((s, p) => s + p.total_price, 0);
 
   let totalDiscount = 0;
-  const discountMatch = html.match(/Desconto[s]?\s*R?\$?\s*([\d.,]+)/i);
-  if (discountMatch) totalDiscount = parseFloat(discountMatch[1].replace(".", "").replace(",", "."));
+  const discountMatch = markdown.match(/Desconto[s]?[^R\d]*(R\$\s*)?([\d.,]+)/i);
+  if (discountMatch) totalDiscount = parseBrNumber(discountMatch[2] || discountMatch[1]);
 
   let paymentMethod = "";
-  const payMatch = html.match(/Forma\s*de\s*pagamento[\s\S]*?(Dinheiro|Cart[aã]o\s*de\s*[DC][eé]bito|Cart[aã]o\s*de\s*Cr[eé]dito|PIX|Outros)/i);
+  const payMatch = markdown.match(
+    /Forma\s*de\s*[Pp]agamento[\s\S]{0,100}?(Dinheiro|Cart[aã]o\s*de\s*[DC][eé]bito|Cart[aã]o\s*de\s*Cr[eé]dito|PIX|Outros)/i
+  );
   if (payMatch) paymentMethod = payMatch[1];
 
   return {
@@ -285,22 +201,149 @@ function parseNfceHtml(html: string): FirecrawlResult {
   };
 }
 
-// ---------- Validation ----------
+// ---------- HTML regex parser ----------
 
-function validateParsedResult(result: FirecrawlResult, htmlLength: number): boolean {
-  // No products at all
-  if (result.products.length === 0) return false;
+function parseNfceHtml(html: string): ParsedNfce {
+  const products: Product[] = [];
 
-  // If HTML is large but we got very few products, likely bad parse
-  if (result.products.length <= 2 && htmlLength > 5000) return false;
+  const accessKeyMatch =
+    html.match(/Chave de acesso[^<]*<[^>]*>[\s\S]*?(\d{44})/i) ||
+    html.match(/(\d{44})/);
+  const accessKey = accessKeyMatch ? accessKeyMatch[1] : "";
 
-  // Check for garbage data: product names too short
-  const garbageCount = result.products.filter(
-    (p) => p.product_name.length < 3 || p.unit_price > 50000 || p.quantity > 5000
-  ).length;
-  if (garbageCount > result.products.length * 0.5) return false;
+  let emitterName = "";
+  const nameMatch = html.match(/<div[^>]*class="txtTopo"[^>]*>([\s\S]*?)<\/div>/i);
+  if (nameMatch) emitterName = stripTags(nameMatch[1]).trim();
+  if (!emitterName) {
+    const nm2 =
+      html.match(/Raz[aã]o Social[^:]*:\s*([^<\n]+)/i) ||
+      html.match(/<div[^>]*NFCe_Emitente[^>]*>[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/i);
+    if (nm2) emitterName = stripTags(nm2[1]).trim();
+  }
 
-  return true;
+  let cnpj = "";
+  const cnpjMatch =
+    html.match(/CNPJ:\s*([\d.\/-]+)/i) ||
+    html.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
+  if (cnpjMatch) cnpj = cnpjMatch[1].replace(/[.\/-]/g, "");
+
+  let address = "";
+  const addrMatch = html.match(/Endere[cç]o[^:]*:\s*([^<\n]+)/i);
+  if (addrMatch) address = stripTags(addrMatch[1]).trim();
+
+  let purchaseDate = new Date().toISOString();
+  const dateMatch =
+    html.match(/Emiss[aã]o:\s*([\d\/]+\s+[\d:]+)/i) ||
+    html.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+  if (dateMatch) {
+    const ds = dateMatch[1] || `${dateMatch[1]} ${dateMatch[2]}`;
+    purchaseDate = parsePurchaseDate(ds);
+  }
+
+  // Table-based layout
+  const productBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
+  for (const block of productBlocks) {
+    const cols = block.match(/<td[^>]*>([\s\S]*?)<\/td>/gi);
+    if (!cols || cols.length < 4) continue;
+    const texts = cols.map((c) => stripTags(c).trim());
+    const nameCandidate = texts[0];
+    const qtyCandidate = parseBrNumber(texts[1]);
+    const unitPriceCandidate = parseBrNumber(texts[2]);
+    const totalCandidate = parseBrNumber(texts[3]);
+    if (nameCandidate && qtyCandidate > 0 && unitPriceCandidate > 0) {
+      const codeMatch = nameCandidate.match(/^\((\d+)\)\s*/);
+      const code = codeMatch ? codeMatch[1] : "";
+      const name = (codeMatch ? nameCandidate.replace(codeMatch[0], "") : nameCandidate).trim();
+      if (name.length >= 2) {
+        products.push({
+          product_code: code,
+          product_name: name,
+          product_name_normalized: normalize(name),
+          quantity: qtyCandidate,
+          unit: texts[4] || "UN",
+          unit_price: unitPriceCandidate,
+          total_price: totalCandidate || qtyCandidate * unitPriceCandidate,
+        });
+      }
+    }
+  }
+
+  // Span-based layout
+  if (products.length === 0) {
+    // Pattern: <span class="txtCodigo">name</span> followed by qty/price spans
+    const spanBlockRegex =
+      /<span[^>]*class="[^"]*txtTit[^"]*"[^>]*>([\s\S]*?)<\/span>([\s\S]*?)(?=<span[^>]*class="[^"]*txtTit|id="linhaTotal"|<\/div>)/gi;
+    let sm: RegExpExecArray | null;
+    while ((sm = spanBlockRegex.exec(html)) !== null) {
+      const nameRaw = stripTags(sm[1]).trim();
+      const rest = sm[2];
+      const qm = rest.match(/Qtde\.?:?\s*([\d.,]+)/i);
+      const um = rest.match(/\bUN\.?:?\s*(\w+)/i);
+      const upm = rest.match(/Vl\.?\s*Unit\.?[^R\d]*(R\$\s*)?([\d.,]+)/i);
+      const tm = rest.match(/Vl\.?\s*Total[^R\d]*(R\$\s*)?([\d.,]+)/i);
+      if (nameRaw && qm && upm) {
+        const codeMatch = nameRaw.match(/^\((\d+)\)\s*/);
+        const code = codeMatch ? codeMatch[1] : "";
+        const name = (codeMatch ? nameRaw.replace(codeMatch[0], "") : nameRaw).trim();
+        const qty = parseBrNumber(qm[1]);
+        const unitPrice = parseBrNumber(upm[2] || upm[1]);
+        const total = tm ? parseBrNumber(tm[2] || tm[1]) : qty * unitPrice;
+        if (name.length >= 2) {
+          products.push({
+            product_code: code,
+            product_name: name,
+            product_name_normalized: normalize(name),
+            quantity: qty,
+            unit: um ? um[1].toUpperCase() : "UN",
+            unit_price: unitPrice,
+            total_price: total,
+          });
+        }
+      }
+    }
+  }
+
+  // Totals
+  let totalAmount = 0;
+  const totalMatch =
+    html.match(/Valor\s*total\s*R?\$?\s*([\d.,]+)/i) ||
+    html.match(/TOTAL\s*R?\$?\s*([\d.,]+)/i);
+  if (totalMatch) totalAmount = parseBrNumber(totalMatch[1]);
+  if (!totalAmount && products.length > 0)
+    totalAmount = products.reduce((s, p) => s + p.total_price, 0);
+
+  let totalDiscount = 0;
+  const discountMatch = html.match(/Desconto[s]?\s*R?\$?\s*([\d.,]+)/i);
+  if (discountMatch) totalDiscount = parseBrNumber(discountMatch[1]);
+
+  let paymentMethod = "";
+  const payMatch = html.match(
+    /Forma\s*de\s*pagamento[\s\S]*?(Dinheiro|Cart[aã]o\s*de\s*[DC][eé]bito|Cart[aã]o\s*de\s*Cr[eé]dito|PIX|Outros)/i
+  );
+  if (payMatch) paymentMethod = payMatch[1];
+
+  return {
+    access_key: accessKey,
+    emitter: { name: emitterName, cnpj, address },
+    purchase_date: purchaseDate,
+    products,
+    total_amount: totalAmount,
+    total_discount: totalDiscount,
+    payment_method: paymentMethod,
+    item_count: products.length,
+  };
+}
+
+// ---------- Fetch with timeout ----------
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------- Main handler ----------
@@ -311,7 +354,6 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Auth check
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -346,7 +388,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Build URL from access key
     if (!url && accessKey) {
       const cleanKey = accessKey.replace(/\s/g, "");
       if (cleanKey.length !== 44 || !/^\d+$/.test(cleanKey)) {
@@ -358,7 +399,6 @@ Deno.serve(async (req) => {
       url = `https://portalsped.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?p=${cleanKey}`;
     }
 
-    // Validate URL
     if (!url.includes("nfce") && !url.includes("nfe") && !url.includes("fazenda")) {
       try { new URL(url); } catch {
         return new Response(
@@ -368,96 +408,126 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Normalize domain
     url = url.replace("nfce.fazenda.mg.gov.br", "portalsped.fazenda.mg.gov.br");
+    console.log("Processing URL:", url);
 
-    // ===== Step 1: Firecrawl extract with retry =====
     const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
-    let parsed: FirecrawlResult | null = null;
-
-    if (firecrawlApiKey) {
-      parsed = await tryFirecrawlExtract(url, firecrawlApiKey, 2);
-    }
-
-    // ===== Step 2: Fallback - Firecrawl HTML + regex =====
+    let markdown = "";
     let html = "";
-    if (!parsed && firecrawlApiKey) {
-      console.log("Firecrawl extract failed after retries, trying Firecrawl HTML fallback...");
+    let parsed: ParsedNfce | null = null;
+
+    // ===== Step 1: Firecrawl — markdown + html, single attempt, 20s timeout =====
+    if (firecrawlApiKey) {
+      console.log("Trying Firecrawl markdown+html...");
       try {
-        const fcHtmlResponse = await fetch("https://api.firecrawl.dev/v1/scrape", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${firecrawlApiKey}`,
-            "Content-Type": "application/json",
+        const fcRes = await fetchWithTimeout(
+          "https://api.firecrawl.dev/v1/scrape",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${firecrawlApiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              url,
+              formats: ["markdown", "html"],
+              waitFor: 4000,
+              timeout: 18000,
+              onlyMainContent: false,
+            }),
           },
-          body: JSON.stringify({ url, formats: ["html"], waitFor: 5000 }),
-        });
-        if (fcHtmlResponse.ok) {
-          const fcHtmlData = await fcHtmlResponse.json();
-          html = fcHtmlData.data?.html || fcHtmlData.html || "";
+          22000 // outer AbortController timeout
+        );
+
+        if (fcRes.ok) {
+          const fcData = await fcRes.json();
+          markdown = fcData.data?.markdown || fcData.markdown || "";
+          html = fcData.data?.html || fcData.html || "";
+          console.log(`Firecrawl OK — markdown: ${markdown.length} chars, html: ${html.length} chars`);
         } else {
-          console.warn("Firecrawl HTML fallback failed with status:", fcHtmlResponse.status);
+          console.warn("Firecrawl returned status:", fcRes.status);
         }
       } catch (e) {
-        console.warn("Firecrawl HTML fallback error:", e);
+        console.warn("Firecrawl error:", e instanceof Error ? e.message : e);
       }
     }
 
-    // ===== Step 3: Native fetch fallback =====
-    if (!parsed && !html) {
-      console.log("Using native fetch for:", url);
+    // ===== Step 2: Parse markdown =====
+    if (markdown) {
+      const mdResult = parseNfceMarkdown(markdown);
+      if (mdResult.products.length > 0) {
+        parsed = mdResult;
+        console.log(`Markdown parse: ${parsed.item_count} products`);
+      } else {
+        console.warn("Markdown parse found 0 products");
+      }
+    }
+
+    // ===== Step 3: Parse HTML (Firecrawl rendered) =====
+    if (!parsed && html) {
+      const htmlResult = parseNfceHtml(html);
+      if (htmlResult.products.length > 0) {
+        parsed = htmlResult;
+        console.log(`Firecrawl HTML parse: ${parsed.item_count} products`);
+      } else {
+        console.warn("Firecrawl HTML parse found 0 products");
+      }
+    }
+
+    // ===== Step 4: Native fetch fallback =====
+    if (!parsed) {
+      console.log("Trying native fetch...");
       try {
-        const response = await fetch(url, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
-            Accept: "text/html,application/xhtml+xml",
+        const nativeRes = await fetchWithTimeout(
+          url,
+          {
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
+              Accept: "text/html,application/xhtml+xml",
+            },
+            redirect: "follow",
           },
-          redirect: "follow",
-        });
-        if (!response.ok) {
-          if (response.status === 404) {
+          12000
+        );
+
+        if (!nativeRes.ok) {
+          if (nativeRes.status === 404) {
             return new Response(
               JSON.stringify({ error: "Cupom fiscal não encontrado" }),
               { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
           }
-          return new Response(
-            JSON.stringify({ error: `Erro ao acessar o portal: ${response.status}` }),
-            { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
+          console.warn("Native fetch status:", nativeRes.status);
+        } else {
+          const nativeHtml = await nativeRes.text();
+          console.log(`Native fetch: ${nativeHtml.length} chars`);
+          const nativeResult = parseNfceHtml(nativeHtml);
+          if (nativeResult.products.length > 0) {
+            parsed = nativeResult;
+            console.log(`Native HTML parse: ${parsed.item_count} products`);
+          } else {
+            console.warn("Native HTML parse found 0 products");
+          }
         }
-        html = await response.text();
       } catch (fetchError) {
-        console.error("Native fetch failed:", fetchError);
-        return new Response(
-          JSON.stringify({ error: "Não foi possível acessar o portal da SEFAZ. Tente novamente em alguns instantes." }),
-          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        console.warn("Native fetch error:", fetchError instanceof Error ? fetchError.message : fetchError);
       }
     }
 
-    // ===== Parse HTML if we have it =====
-    if (!parsed && html) {
-      const regexResult = parseNfceHtml(html);
-      if (validateParsedResult(regexResult, html.length)) {
-        parsed = regexResult;
-        console.log(`HTML regex parse successful: ${parsed.item_count} products`);
-      } else {
-        console.warn(`HTML regex parse produced invalid data: ${regexResult.item_count} products from ${html.length} chars of HTML`);
-      }
-    }
-
-    // ===== Final validation =====
+    // ===== Final check =====
     if (!parsed || parsed.products.length === 0) {
+      const detail = !markdown && !html
+        ? "Não foi possível acessar o portal da SEFAZ. Verifique sua conexão ou tente novamente."
+        : "Não foi possível extrair os produtos do cupom. O portal pode ter alterado seu layout.";
+      console.error("No products found after all attempts");
       return new Response(
-        JSON.stringify({
-          error: "Não foi possível extrair os produtos do cupom fiscal. O portal pode estar lento. Tente novamente em alguns instantes.",
-        }),
+        JSON.stringify({ error: detail }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Fill missing access key
+    // Fill missing access key from URL or input
     if (!parsed.access_key && accessKey) {
       parsed.access_key = accessKey.replace(/\s/g, "");
     }
@@ -471,7 +541,7 @@ Deno.serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
-    console.error("fetch-nfce error:", error);
+    console.error("fetch-nfce unhandled error:", error);
     return new Response(
       JSON.stringify({ error: "Erro interno ao processar o cupom" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
