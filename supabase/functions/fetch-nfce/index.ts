@@ -1,4 +1,4 @@
-// fetch-nfce — direct fetch from SEFAZ MG portal, no Firecrawl dependency
+// fetch-nfce — Firecrawl (primary) + direct fetch (fallback) + HTML parser
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -53,7 +53,8 @@ function parsePurchaseDate(dateStr: string | undefined): string {
   ).toISOString();
 }
 
-// Strip "Label: " injected by some portals: "Qtde total de itens: 3.0000" → "3.0000"
+// Strip "Label: " prefixes injected by Firecrawl markdown conversion:
+// "Qtde total de itens: 3.0000" → "3.0000"
 function stripCellLabel(text: string): string {
   return text
     .replace(/^[A-Za-záàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ ]+:\s*/i, "")
@@ -84,10 +85,8 @@ interface ParsedNfce {
   item_count: number;
 }
 
-// ─── Parser A: HTML table rows ─────────────────────────────────────────────────
-// Works on the raw HTML from SEFAZ portal.
-// SEFAZ MG columns: [name+code | qty (with optional label) | unit | total]
-// No unit-price column — we derive it from total/qty.
+// ─── Parser A: HTML table rows ────────────────────────────────────────────────
+// SEFAZ MG columns: [name+code | qty | unit | total] — no unit-price column.
 
 function parseHtmlTable(html: string): Product[] {
   const products: Product[] = [];
@@ -100,7 +99,6 @@ function parseHtmlTable(html: string): Product[] {
     const raw = cells.map((c) => stripTags(c).trim());
     const clean = raw.map(stripCellLabel);
 
-    // col 0: product name (possibly "NAME (Codigo: CODE)")
     const rawName = raw[0];
     if (!rawName || rawName.length < 3) continue;
 
@@ -120,7 +118,7 @@ function parseHtmlTable(html: string): Product[] {
     const total = nums[totalIdx];
     if (qty <= 0 || total <= 0) continue;
 
-    // unit: first cell between qty and total that looks like a unit code
+    // unit between qty and total
     let unit = "UN";
     for (let i = qtyIdx + 1; i < totalIdx; i++) {
       if (/^(UN|KG|LT|PC|CX|MT|GR|ML|G)\b/i.test(clean[i])) {
@@ -148,29 +146,26 @@ function parseHtmlTable(html: string): Product[] {
   return products;
 }
 
-// ─── Parser B: plain-text regex ───────────────────────────────────────────────
-// Fallback when table structure doesn't match.
-// Works on the full plain text after stripping all HTML tags.
-// Pattern from SEFAZ MG:
-//   "NAME (Codigo: CODE) ... QTY ... UN: UNIT ... R$ PRICE"
+// ─── Parser B: plain-text regex ──────────────────────────────────────────────
+// Fallback for plain text or Firecrawl markdown output.
+// Works on: "NAME (Codigo: CODE) ... QTY ... UN: UNIT ... R$ PRICE"
 
 function parsePlainText(text: string): Product[] {
   const products: Product[] = [];
+  let m: RegExpExecArray | null;
 
-  // Strategy 1 — user-provided regex (works on stripped page text)
+  // Strategy 1 — SEFAZ MG plain-text after stripTags
   const re1 =
     /([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][^(]{2,}?)\(C[oó]digo:\s*(\d+)\)[\s\S]*?(\d+[.,]\d+)\s*UN:\s*(\w+)[\s\S]*?R\$\s*([\d.,]+)/gi;
-  let m: RegExpExecArray | null;
   while ((m = re1.exec(text)) !== null) {
     const name = m[1].replace(/[|\s]+$/, "").trim();
     if (name.length < 2) continue;
-    const code = m[2];
     const qty = parseBrNumber(m[3]);
     const unit = m[4].toUpperCase();
     const total = parseBrNumber(m[5]);
     if (qty <= 0 || total <= 0 || total > 50_000) continue;
     products.push({
-      product_code: code,
+      product_code: m[2],
       product_name: name,
       product_name_normalized: normalize(name),
       quantity: qty,
@@ -180,7 +175,7 @@ function parsePlainText(text: string): Product[] {
     });
   }
 
-  // Strategy 2 — pipe-separated markdown-style lines (Firecrawl legacy format)
+  // Strategy 2 — Firecrawl pipe-separated markdown format
   if (products.length === 0) {
     const re2 =
       /^[|\s]*(.+?)\s*\(C[oó]digo:\s*(\d+)\)\s*[|│]\s*[^|│]*?:\s*([\d.,]+)\s*[|│]\s*UN:\s*(\w+)\s*[|│][^|│]*?R\$\s*([\d.,]+)/gim;
@@ -206,18 +201,18 @@ function parsePlainText(text: string): Product[] {
   return products;
 }
 
-// ─── Full HTML parser ──────────────────────────────────────────────────────────
+// ─── Full HTML parser ─────────────────────────────────────────────────────────
 
 function parseNfceHtml(html: string): ParsedNfce {
-  // ── Access key ──
+  // Access key
   const akMatch =
     html.match(/Chave de acesso[^<]*<[^>]*>[^<]*(\d{44})/i) ||
     html.match(/(\d{44})/);
   const accessKey = akMatch ? akMatch[1] : "";
 
-  // ── Emitter name ── (never captures HTML attribute values)
+  // Emitter name — [^<]+ never captures HTML attribute garbage
   let emitterName = "";
-  const namePatterns = [
+  const namePatterns: RegExp[] = [
     /<[^>]+class="[^"]*NomeEmit[^"]*"[^>]*>([^<]{3,})</i,
     /<[^>]+id="[^"]*NomeEmit[^"]*"[^>]*>([^<]{3,})</i,
     /<[^>]+class="[^"]*txtTit[^"]*"[^>]*>([^<]{3,})</i,
@@ -237,36 +232,42 @@ function parseNfceHtml(html: string): ParsedNfce {
     }
   }
 
-  // ── CNPJ ──
+  // CNPJ
   let cnpj = "";
   const cnpjM =
     html.match(/CNPJ[:\s]+([\d.\/-]+)/i) ||
     html.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
   if (cnpjM) cnpj = cnpjM[1].replace(/[.\/-]/g, "");
 
-  // ── Address ──
+  // Address
   let address = "";
   const addrM = html.match(/Endere[cç]o[^:]*:\s*([^<\n]{5,})/i);
   if (addrM) address = stripTags(addrM[1]).trim();
 
-  // ── Purchase date ──
+  // Purchase date
   let purchaseDate = new Date().toISOString();
   const dateM =
     html.match(/Emiss[aã]o[^:]*:\s*([\d\/]+\s+[\d:]+)/i) ||
     html.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
   if (dateM) purchaseDate = parsePurchaseDate(dateM[1] ?? `${dateM[1]} ${dateM[2]}`);
 
-  // ── Products: try table parser first, then plain-text fallback ──
+  // Products: table parser first, then text fallback
   let products = parseHtmlTable(html);
   console.log(`Table parser: ${products.length} products`);
 
   if (products.length === 0) {
     const plainText = stripTags(html);
     products = parsePlainText(plainText);
-    console.log(`Text parser: ${products.length} products`);
+    console.log(`Text parser (plain): ${products.length} products`);
   }
 
-  // ── Totals ──
+  // Also try markdown format on full content (Firecrawl output)
+  if (products.length === 0) {
+    products = parsePlainText(html);
+    console.log(`Text parser (raw): ${products.length} products`);
+  }
+
+  // Totals
   let totalAmount = 0;
   const totalM =
     html.match(/Valor\s*total\s*R?\$?\s*([\d.,]+)/i) ||
@@ -333,7 +334,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // ── Auth: validate JWT locally, no HTTP round-trip ──
+    // ── Auth: JWT local validation, no HTTP round-trip ──
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -377,7 +378,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── Build URL from access_key if needed ──
     if (!url && accessKey) {
       const cleanKey = accessKey.replace(/\s/g, "");
       if (cleanKey.length !== 44 || !/^\d+$/.test(cleanKey)) {
@@ -389,84 +389,133 @@ Deno.serve(async (req) => {
       url = `https://portalsped.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?p=${cleanKey}`;
     }
 
-    // Normalize SEFAZ MG domain variant
     url = url.replace("nfce.fazenda.mg.gov.br", "portalsped.fazenda.mg.gov.br");
     console.log("Processing URL:", url);
 
-    // ── Fetch attempt 1: URL as-is ──
     let html = "";
+    let markdown = "";
     let lastStatus = 0;
 
-    const tryFetch = async (fetchUrl: string, timeoutMs: number): Promise<string> => {
-      console.log("Fetching:", fetchUrl);
-      const res = await fetchWithTimeout(
-        fetchUrl,
-        { headers: BROWSER_HEADERS, redirect: "follow" },
-        timeoutMs,
-      );
-      lastStatus = res.status;
-      console.log(`Status: ${res.status}  Content-Type: ${res.headers.get("content-type") ?? "-"}`);
-      if (res.ok) {
-        const text = await res.text();
-        console.log(`HTML size: ${text.length} chars`);
-        console.log(`HTML preview: ${text.slice(0, 400).replace(/\s+/g, " ")}`);
-        return text;
-      }
-      if (res.status === 404) throw Object.assign(new Error("not_found"), { status: 404 });
-      throw Object.assign(new Error(`http_${res.status}`), { status: res.status });
-    };
-
-    try {
-      html = await tryFetch(url, 15000);
-    } catch (e: unknown) {
-      const err = e as { status?: number; message?: string };
-      if (err.status === 404) {
-        return new Response(
-          JSON.stringify({ error: "Cupom fiscal não encontrado no portal da SEFAZ." }),
-          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    // ── Step 1: Firecrawl (primary — proven to access SEFAZ portal) ──
+    // NOTE: do NOT use location:{country:"BR"} — causes 402 on free plan.
+    const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
+    if (firecrawlApiKey) {
+      console.log("Trying Firecrawl...");
+      try {
+        const fcRes = await fetchWithTimeout(
+          "https://api.firecrawl.dev/v1/scrape",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${firecrawlApiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              url,
+              formats: ["markdown", "html"],
+              waitFor: 5000,
+              timeout: 20000,
+              onlyMainContent: false,
+              headers: { "Accept-Language": "pt-BR,pt;q=0.9" },
+            }),
+          },
+          24000,
         );
-      }
-      console.warn("Attempt 1 failed:", err.message);
 
-      // ── Fetch attempt 2: chaveNFe query param format ──
-      const cleanKey = (accessKey || url.match(/p=(\d{44})/)?.[1] || "").replace(/\s/g, "");
-      if (cleanKey.length === 44) {
-        const altUrl = `https://portalsped.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?chaveNFe=${cleanKey}`;
-        try {
-          html = await tryFetch(altUrl, 12000);
-        } catch (e2: unknown) {
-          console.warn("Attempt 2 failed:", (e2 as Error).message);
+        lastStatus = fcRes.status;
+        console.log(`Firecrawl status: ${fcRes.status}`);
+
+        if (fcRes.ok) {
+          const d = await fcRes.json();
+          markdown = d.data?.markdown || d.markdown || "";
+          html = d.data?.html || d.html || "";
+          console.log(`Firecrawl: markdown=${markdown.length} html=${html.length}`);
+          if (markdown) console.log("Markdown preview:", markdown.slice(0, 300));
+          else if (html) console.log("HTML preview:", html.slice(0, 300));
+        } else {
+          const errBody = await fcRes.text().catch(() => "");
+          console.warn(`Firecrawl ${fcRes.status}: ${errBody.slice(0, 200)}`);
         }
+      } catch (e) {
+        console.warn("Firecrawl error:", e instanceof Error ? e.message : e);
       }
     }
 
-    if (!html) {
+    // ── Step 2: Direct fetch fallback ──
+    if (!html && !markdown) {
+      console.log("Firecrawl returned nothing — trying direct fetch...");
+      try {
+        const res = await fetchWithTimeout(
+          url,
+          { headers: BROWSER_HEADERS, redirect: "follow" },
+          15000,
+        );
+        lastStatus = res.status;
+        console.log(`Direct fetch status: ${res.status}`);
+        if (res.ok) {
+          html = await res.text();
+          console.log(`Direct fetch: ${html.length} chars`);
+          console.log("HTML preview:", html.slice(0, 300));
+        } else if (res.status === 404) {
+          return new Response(
+            JSON.stringify({ error: "Cupom fiscal não encontrado no portal da SEFAZ." }),
+            { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      } catch (e) {
+        console.warn("Direct fetch error:", e instanceof Error ? e.message : e);
+      }
+    }
+
+    if (!html && !markdown) {
       const detail =
         lastStatus === 403
-          ? "Portal da SEFAZ bloqueou o acesso. Use a aba 'Digitar' para inserir a chave manualmente."
+          ? "Portal da SEFAZ bloqueou o acesso. Use 'Digitar' para inserir a chave manualmente."
           : lastStatus >= 500
           ? "Portal da SEFAZ está fora do ar. Tente novamente em instantes."
           : "Não foi possível acessar o portal da SEFAZ.";
       return new Response(
-        JSON.stringify({ error: detail, _debug: `fetch_status=${lastStatus}` }),
+        JSON.stringify({ error: detail, _debug: `status=${lastStatus}` }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    // ── Parse ──
-    const parsed = parseNfceHtml(html);
-    console.log(
-      `Parsed: ${parsed.item_count} products, emitter="${parsed.emitter.name}", total=${parsed.total_amount}`,
-    );
+    // ── Step 3: Parse ──
+    // Try HTML first (richer structure), then markdown, then plain text of either
+    let parsed: ParsedNfce | null = null;
 
-    if (parsed.products.length === 0) {
-      const preview = html.slice(0, 400).replace(/\s+/g, " ");
+    if (html) {
+      const p = parseNfceHtml(html);
+      if (p.products.length > 0) parsed = p;
+    }
+
+    if (!parsed && markdown) {
+      const p = parseNfceHtml(markdown); // parsers also work on markdown
+      if (p.products.length > 0) parsed = p;
+    }
+
+    if (!parsed) {
+      const content = html || markdown;
+      const plain = stripTags(content);
+      const plainProducts = parsePlainText(plain);
+      if (plainProducts.length > 0) {
+        // Build a minimal ParsedNfce from the plain-text results
+        const p = parseNfceHtml(content); // get metadata (emitter, date, etc.)
+        parsed = { ...p, products: plainProducts, item_count: plainProducts.length };
+        // Recalculate total if missing
+        if (!parsed.total_amount)
+          parsed.total_amount = plainProducts.reduce((s, x) => s + x.total_price, 0);
+      }
+    }
+
+    if (!parsed || parsed.products.length === 0) {
+      const content = html || markdown;
+      const preview = content.slice(0, 400).replace(/\s+/g, " ");
       console.warn("Zero products. Preview:", preview);
       return new Response(
         JSON.stringify({
-          error:
-            "HTML obtido mas nenhum produto extraído. O layout do portal pode ter mudado.",
-          _debug: `html=${html.length}chars | preview=${preview}`,
+          error: "HTML obtido mas nenhum produto extraído. O portal pode ter mudado de layout.",
+          _debug: `html=${html.length} md=${markdown.length} | ${preview}`,
         }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
@@ -478,6 +527,10 @@ Deno.serve(async (req) => {
       const fromUrl = url.match(/[?&](?:p|chaveNFe)=(\d{44})/)?.[1] ?? "";
       parsed.access_key = fromKey || fromUrl;
     }
+
+    console.log(
+      `Success: ${parsed.item_count} products, emitter="${parsed.emitter.name}", total=${parsed.total_amount}`,
+    );
 
     return new Response(
       JSON.stringify({ ...parsed, qr_code_url: url }),
