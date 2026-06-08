@@ -20,8 +20,20 @@ function stripTags(html: string): string {
 
 function parseBrNumber(s: string): number {
   if (!s) return 0;
-  const clean = s.replace(/\./g, "").replace(",", ".");
-  return parseFloat(clean) || 0;
+  const t = s.replace(/R\$\s*/gi, "").trim();
+  if (!t) return 0;
+  const hasDot = t.includes(".");
+  const hasComma = t.includes(",");
+  if (hasDot && hasComma) {
+    return parseFloat(
+      t.lastIndexOf(",") > t.lastIndexOf(".")
+        ? t.replace(/\./g, "").replace(",", ".")
+        : t.replace(/,/g, "")
+    ) || 0;
+  }
+  if (hasComma) return parseFloat(t.replace(",", ".")) || 0;
+  // dot only: parseFloat handles both 12.99 and 12.990 correctly as decimals
+  return parseFloat(t) || 0;
 }
 
 function parsePurchaseDate(dateStr: string | undefined): string {
@@ -416,9 +428,9 @@ Deno.serve(async (req) => {
     let html = "";
     let parsed: ParsedNfce | null = null;
 
-    // ===== Step 1: Firecrawl — markdown + html, single attempt, 20s timeout =====
+    // ===== Step 1: Firecrawl — markdown + rawHtml (JSF renders server-side, no JS needed) =====
     if (firecrawlApiKey) {
-      console.log("Trying Firecrawl markdown+html...");
+      console.log("Trying Firecrawl markdown+rawHtml...");
       try {
         const fcRes = await fetchWithTimeout(
           "https://api.firecrawl.dev/v1/scrape",
@@ -430,22 +442,23 @@ Deno.serve(async (req) => {
             },
             body: JSON.stringify({
               url,
-              formats: ["markdown", "html"],
-              waitFor: 4000,
-              timeout: 18000,
+              formats: ["markdown", "rawHtml"],
+              waitFor: 3000,
+              timeout: 20000,
               onlyMainContent: false,
             }),
           },
-          22000 // outer AbortController timeout
+          24000
         );
 
         if (fcRes.ok) {
           const fcData = await fcRes.json();
           markdown = fcData.data?.markdown || fcData.markdown || "";
-          html = fcData.data?.html || fcData.html || "";
-          console.log(`Firecrawl OK — markdown: ${markdown.length} chars, html: ${html.length} chars`);
+          html = fcData.data?.rawHtml || fcData.rawHtml || fcData.data?.html || fcData.html || "";
+          console.log(`Firecrawl OK — markdown: ${markdown.length} chars, rawHtml: ${html.length} chars`);
         } else {
-          console.warn("Firecrawl returned status:", fcRes.status);
+          const errBody = await fcRes.text().catch(() => "");
+          console.warn(`Firecrawl status ${fcRes.status}:`, errBody.slice(0, 200));
         }
       } catch (e) {
         console.warn("Firecrawl error:", e instanceof Error ? e.message : e);
