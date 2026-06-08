@@ -73,10 +73,20 @@ interface ParsedNfce {
 
 // ---------- Markdown parser ----------
 
+// Strip "Label: " prefix injected by Firecrawl when it inlines table headers into cells.
+// e.g. "Qtde total de itens: 3.0000" → "3.0000"
+//      "Valor total RS: R$ 17,94"    → "17,94"
+function stripCellLabel(text: string): string {
+  return text
+    .replace(/^[A-Za-záàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ ]+:\s*/i, "")
+    .replace(/^R\$\s*/i, "")
+    .trim();
+}
+
 function parseNfceMarkdown(markdown: string): ParsedNfce {
   const products: Product[] = [];
 
-  // Access key
+  // Access key (44 consecutive digits)
   const accessKeyMatch =
     markdown.match(/Chave de acesso[^:\n]*:?\s*[\n\s]*([\d\s]{44,55})/) ||
     markdown.match(/(\d{44})/);
@@ -84,12 +94,12 @@ function parseNfceMarkdown(markdown: string): ParsedNfce {
     ? accessKeyMatch[1].replace(/\s/g, "").slice(0, 44)
     : "";
 
-  // Emitter
+  // Emitter name
   let emitterName = "";
   const nameMatch =
     markdown.match(/^#\s+(.+)/m) ||
     markdown.match(/Raz[aã]o Social[^:]*:\s*([^\n]+)/i) ||
-    markdown.match(/\*\*([^*]+)\*\*/);
+    markdown.match(/\*\*([^*\n]{5,})\*\*/);
   if (nameMatch) emitterName = nameMatch[1].trim();
 
   let cnpj = "";
@@ -105,78 +115,83 @@ function parseNfceMarkdown(markdown: string): ParsedNfce {
   let purchaseDate = new Date().toISOString();
   const dateMatch =
     markdown.match(/Emiss[aã]o[^:]*:\s*([\d\/]+ [\d:]+)/i) ||
-    markdown.match(/Data[^:]*:\s*([\d\/]+ [\d:]+)/i) ||
     markdown.match(/(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2})/);
   if (dateMatch) purchaseDate = parsePurchaseDate(dateMatch[1]);
 
-  // Markdown table rows: | col1 | col2 | col3 | col4 | col5 | col6 |
-  const tableRowRegex = /^\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|/gm;
+  // ── Strategy 1: SEFAZ MG pipe format ──────────────────────────────────────
+  // Firecrawl converts the HTML table to markdown and inlines the column header
+  // into each cell: "NAME (Codigo: CODE) | Qtde total de itens: QTY | UN: UNIT | Valor total RS: R$ PRICE"
+  const sefazMgRegex =
+    /^[|\s]*(.+?)\s*\(C[oó]digo:\s*(\d+)\)\s*\|[^|]*?:\s*([\d.,]+)\s*\|\s*UN:\s*(\w+)\s*\|[^|]*?R\$\s*([\d.,]+)/gim;
   let m: RegExpExecArray | null;
-  while ((m = tableRowRegex.exec(markdown)) !== null) {
-    const cols = [m[1], m[2], m[3], m[4], m[5], m[6]].map((c) => c.trim());
-    // Skip header/separator rows
-    if (cols.some((c) => /^[-:]+$/.test(c)) || cols[0].toLowerCase().includes("c[oó]d")) continue;
-
-    // Try to identify columns — look for numeric values
-    const nums = cols.map((c) => parseBrNumber(c));
-    // Heuristic: name is the longest non-numeric column
-    let nameIdx = -1;
-    let maxLen = 0;
-    cols.forEach((c, i) => {
-      if (isNaN(nums[i]) || nums[i] === 0) {
-        if (c.length > maxLen) { maxLen = c.length; nameIdx = i; }
-      }
-    });
-    if (nameIdx === -1) continue;
-
-    const name = cols[nameIdx];
+  while ((m = sefazMgRegex.exec(markdown)) !== null) {
+    const name = m[1].replace(/^[|*\s>]+/, "").trim();
     if (name.length < 2) continue;
-
-    // Find qty, unit_price, total (last two numerics tend to be prices)
-    const numericCols = cols.map((c, i) => ({ i, v: parseBrNumber(c) })).filter((x) => x.v > 0);
-    if (numericCols.length < 2) continue;
-
-    const qty = numericCols[0]?.v || 1;
-    const unitPrice = numericCols[numericCols.length - 2]?.v || 0;
-    const total = numericCols[numericCols.length - 1]?.v || qty * unitPrice;
-
-    // Unit column
-    const unitIdx = cols.findIndex((c, i) => i !== nameIdx && /^(UN|KG|LT|PC|CX|MT|GR|ML|G\b)/i.test(c.trim()));
-    const unit = unitIdx >= 0 ? cols[unitIdx].trim().toUpperCase() : "UN";
-
-    // Code
-    const codeIdx = cols.findIndex((c, i) => i !== nameIdx && /^\d+$/.test(c.trim()) && c.trim().length <= 13);
-    const code = codeIdx >= 0 ? cols[codeIdx].trim() : "";
-
-    const cleanName = name.replace(/^\(?\d+\)?\s*/, "").trim();
+    const qty = parseBrNumber(m[3]);
+    const unit = m[4].toUpperCase();
+    const total = parseBrNumber(m[5]);
+    if (qty <= 0 || total <= 0 || total > 50_000) continue;
     products.push({
-      product_code: code,
-      product_name: cleanName,
-      product_name_normalized: normalize(cleanName),
+      product_code: m[2],
+      product_name: name,
+      product_name_normalized: normalize(name),
       quantity: qty,
       unit,
-      unit_price: unitPrice,
+      unit_price: parseFloat((total / qty).toFixed(4)),
       total_price: total,
     });
   }
 
-  // Inline product pattern: "NOME QTD UN R$ PRICE"
+  // ── Strategy 2: generic 4-column markdown table ────────────────────────────
+  // Columns: name | qty | unit | total  (with optional label prefixes in cells)
   if (products.length === 0) {
-    const inlineRegex =
-      /([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ0-9 .\/\-]{3,})\s+([\d,]+)\s+(UN|KG|LT|PC|CX|MT|GR|ML)\s+(?:R\$\s*)?([\d.,]+)\s+(?:R\$\s*)?([\d.,]+)/gi;
-    while ((m = inlineRegex.exec(markdown)) !== null) {
-      const name = m[1].trim();
-      const qty = parseBrNumber(m[2]);
-      const unit = m[3].toUpperCase();
-      const unitPrice = parseBrNumber(m[4]);
-      const total = parseBrNumber(m[5]);
+    const tableRow4 = /^\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|/gm;
+    while ((m = tableRow4.exec(markdown)) !== null) {
+      const cols = [m[1], m[2], m[3], m[4]].map((c) => c.trim());
+      if (cols.some((c) => /^[-:]+$/.test(c))) continue; // separator row
+      const cleaned = cols.map(stripCellLabel);
+      const qty = parseBrNumber(cleaned[1]);
+      const total = parseBrNumber(cleaned[3]);
+      const name = cols[0].replace(/\s*\(C[oó]digo:\s*\d+\)/i, "").replace(/^[|*\s>]+/, "").trim();
+      const codeMatch = cols[0].match(/\(C[oó]digo:\s*(\d+)\)/i);
+      const unit = /^(UN|KG|LT|PC|CX|MT|GR|ML)\b/i.test(cleaned[2]) ? cleaned[2].toUpperCase() : "UN";
+      if (name.length < 2 || qty <= 0 || total <= 0 || total > 50_000) continue;
+      products.push({
+        product_code: codeMatch ? codeMatch[1] : "",
+        product_name: name,
+        product_name_normalized: normalize(name),
+        quantity: qty,
+        unit,
+        unit_price: parseFloat((total / qty).toFixed(4)),
+        total_price: total,
+      });
+    }
+  }
+
+  // ── Strategy 3: 6-column table (other state portals) ──────────────────────
+  if (products.length === 0) {
+    const tableRow6 = /^\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|/gm;
+    while ((m = tableRow6.exec(markdown)) !== null) {
+      const cols = [m[1], m[2], m[3], m[4], m[5], m[6]].map((c) => c.trim());
+      if (cols.some((c) => /^[-:]+$/.test(c))) continue;
+      const nums = cols.map((c) => parseBrNumber(stripCellLabel(c)));
+      let nameIdx = -1, maxLen = 0;
+      cols.forEach((c, i) => { if (!nums[i] && c.length > maxLen) { maxLen = c.length; nameIdx = i; } });
+      if (nameIdx === -1) continue;
+      const positives = nums.map((v, i) => ({ i, v })).filter((x) => x.v > 0 && x.v < 50_000);
+      if (positives.length < 2) continue;
+      const qty = positives[0].v;
+      const total = positives[positives.length - 1].v;
+      const name = cols[nameIdx].replace(/^\(?\d+\)?\s*/, "").trim();
+      if (name.length < 2) continue;
+      const unitIdx = cols.findIndex((c, i) => i !== nameIdx && /^(UN|KG|LT|PC|CX|MT|GR|ML)\b/i.test(c.trim()));
       products.push({
         product_code: "",
         product_name: name,
         product_name_normalized: normalize(name),
         quantity: qty,
-        unit,
-        unit_price: unitPrice,
+        unit: unitIdx >= 0 ? cols[unitIdx].trim().toUpperCase() : "UN",
+        unit_price: parseFloat((total / qty).toFixed(4)),
         total_price: total,
       });
     }
@@ -185,6 +200,7 @@ function parseNfceMarkdown(markdown: string): ParsedNfce {
   // Totals
   let totalAmount = 0;
   const totalMatch =
+    markdown.match(/Valor\s*[Tt]otal\s*R\$[^|]*?R?\$?\s*([\d.,]+)/i) ||
     markdown.match(/Valor\s*[Tt]otal[^R\d]*(R\$\s*)?([\d.,]+)/i) ||
     markdown.match(/TOTAL[^R\d]*(R\$\s*)?([\d.,]+)/i);
   if (totalMatch) totalAmount = parseBrNumber(totalMatch[2] || totalMatch[1]);
@@ -195,11 +211,12 @@ function parseNfceMarkdown(markdown: string): ParsedNfce {
   const discountMatch = markdown.match(/Desconto[s]?[^R\d]*(R\$\s*)?([\d.,]+)/i);
   if (discountMatch) totalDiscount = parseBrNumber(discountMatch[2] || discountMatch[1]);
 
+  // Payment: "99 - Outros", "01 - Dinheiro", etc.
   let paymentMethod = "";
-  const payMatch = markdown.match(
-    /Forma\s*de\s*[Pp]agamento[\s\S]{0,100}?(Dinheiro|Cart[aã]o\s*de\s*[DC][eé]bito|Cart[aã]o\s*de\s*Cr[eé]dito|PIX|Outros)/i
-  );
-  if (payMatch) paymentMethod = payMatch[1];
+  const payMatch =
+    markdown.match(/(\d{2,3}\s*[-–]\s*(?:Dinheiro|Cart[aã]o|PIX|Outros|Cheque|Dep[oó]sito|Boleto)[^\n]*)/i) ||
+    markdown.match(/Forma[^:]*:\s*([^\n|]{3,50})/i);
+  if (payMatch) paymentMethod = payMatch[1].trim();
 
   return {
     access_key: accessKey,
@@ -215,103 +232,153 @@ function parseNfceMarkdown(markdown: string): ParsedNfce {
 
 // ---------- HTML regex parser ----------
 
+// Extract safe text from an HTML match — never return raw attribute values.
+// Uses [^<]+ to stop at the next tag, avoiding capturing garbage like "5%;">".
+function safeText(match: RegExpMatchArray | null): string {
+  if (!match) return "";
+  return stripTags(match[1] ?? match[0]).trim();
+}
+
 function parseNfceHtml(html: string): ParsedNfce {
   const products: Product[] = [];
 
+  // Access key
   const accessKeyMatch =
-    html.match(/Chave de acesso[^<]*<[^>]*>[\s\S]*?(\d{44})/i) ||
+    html.match(/Chave de acesso[^<]*<[^>]*>[^<]*(\d{44})/i) ||
     html.match(/(\d{44})/);
   const accessKey = accessKeyMatch ? accessKeyMatch[1] : "";
 
+  // ── Emitter name ──────────────────────────────────────────────────────────
+  // Try SEFAZ MG classes before falling through to generic patterns.
+  // IMPORTANT: use [^<]+ so we never capture attribute values or nested tags.
   let emitterName = "";
-  const nameMatch = html.match(/<div[^>]*class="txtTopo"[^>]*>([\s\S]*?)<\/div>/i);
-  if (nameMatch) emitterName = stripTags(nameMatch[1]).trim();
-  if (!emitterName) {
-    const nm2 =
-      html.match(/Raz[aã]o Social[^:]*:\s*([^<\n]+)/i) ||
-      html.match(/<div[^>]*NFCe_Emitente[^>]*>[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/i);
-    if (nm2) emitterName = stripTags(nm2[1]).trim();
-  }
-
-  let cnpj = "";
-  const cnpjMatch =
-    html.match(/CNPJ:\s*([\d.\/-]+)/i) ||
-    html.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
-  if (cnpjMatch) cnpj = cnpjMatch[1].replace(/[.\/-]/g, "");
-
-  let address = "";
-  const addrMatch = html.match(/Endere[cç]o[^:]*:\s*([^<\n]+)/i);
-  if (addrMatch) address = stripTags(addrMatch[1]).trim();
-
-  let purchaseDate = new Date().toISOString();
-  const dateMatch =
-    html.match(/Emiss[aã]o:\s*([\d\/]+\s+[\d:]+)/i) ||
-    html.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
-  if (dateMatch) {
-    const ds = dateMatch[1] || `${dateMatch[1]} ${dateMatch[2]}`;
-    purchaseDate = parsePurchaseDate(ds);
-  }
-
-  // Table-based layout
-  const productBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
-  for (const block of productBlocks) {
-    const cols = block.match(/<td[^>]*>([\s\S]*?)<\/td>/gi);
-    if (!cols || cols.length < 4) continue;
-    const texts = cols.map((c) => stripTags(c).trim());
-    const nameCandidate = texts[0];
-    const qtyCandidate = parseBrNumber(texts[1]);
-    const unitPriceCandidate = parseBrNumber(texts[2]);
-    const totalCandidate = parseBrNumber(texts[3]);
-    if (nameCandidate && qtyCandidate > 0 && unitPriceCandidate > 0) {
-      const codeMatch = nameCandidate.match(/^\((\d+)\)\s*/);
-      const code = codeMatch ? codeMatch[1] : "";
-      const name = (codeMatch ? nameCandidate.replace(codeMatch[0], "") : nameCandidate).trim();
-      if (name.length >= 2) {
-        products.push({
-          product_code: code,
-          product_name: name,
-          product_name_normalized: normalize(name),
-          quantity: qtyCandidate,
-          unit: texts[4] || "UN",
-          unit_price: unitPriceCandidate,
-          total_price: totalCandidate || qtyCandidate * unitPriceCandidate,
-        });
+  const emitterPatterns = [
+    /<[^>]+class="[^"]*NomeEmit[^"]*"[^>]*>([^<]{3,})</i,
+    /<[^>]+id="[^"]*NomeEmit[^"]*"[^>]*>([^<]{3,})</i,
+    /<[^>]+class="[^"]*txtTit[^"]*"[^>]*>([^<]{3,})</i,
+    /<[^>]+class="[^"]*txtTopo[^"]*"[^>]*>([^<]{3,})</i,
+    /Raz[aã]o Social[^:]*:\s*([^<\n]{3,})/i,
+  ];
+  for (const pat of emitterPatterns) {
+    const m = html.match(pat);
+    if (m) {
+      const candidate = stripTags(m[1]).trim();
+      // Reject if it looks like an HTML fragment (contains >  or only digits/symbols)
+      if (candidate.length > 3 && !/[><%]/.test(candidate) && /[A-Za-z]/.test(candidate)) {
+        emitterName = candidate;
+        break;
       }
     }
   }
 
-  // Span-based layout
+  let cnpj = "";
+  const cnpjMatch =
+    html.match(/CNPJ[:\s]+([\d.\/-]+)/i) ||
+    html.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
+  if (cnpjMatch) cnpj = cnpjMatch[1].replace(/[.\/-]/g, "");
+
+  let address = "";
+  const addrMatch = html.match(/Endere[cç]o[^:]*:\s*([^<\n]{5,})/i);
+  if (addrMatch) address = stripTags(addrMatch[1]).trim();
+
+  let purchaseDate = new Date().toISOString();
+  const dateMatch =
+    html.match(/Emiss[aã]o[^:]*:\s*([\d\/]+\s+[\d:]+)/i) ||
+    html.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+  if (dateMatch) purchaseDate = parsePurchaseDate(dateMatch[1] ?? `${dateMatch[1]} ${dateMatch[2]}`);
+
+  // ── Table-based products ───────────────────────────────────────────────────
+  // SEFAZ MG columns: [name+code, qty, unit, total]   (NO unit-price column)
+  // Other portals:    [name, qty, unit_price, total, unit, ...]
+  // Strategy: strip embedded labels, find qty as first number, total as last,
+  // unit as any UN/KG/… column between them. Never require unitPrice > 0.
+  const productBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? [];
+  for (const block of productBlocks) {
+    const tdMatches = block.match(/<td[^>]*>([\s\S]*?)<\/td>/gi);
+    if (!tdMatches || tdMatches.length < 4) continue;
+
+    // Raw cell text
+    const rawTexts = tdMatches.map((c) => stripTags(c).trim());
+    // Strip "Label: " prefixes (e.g. "Qtde total de itens: 3.0000" → "3.0000")
+    const cleanTexts = rawTexts.map(stripCellLabel);
+
+    // Column 0 = product name (possibly with "(Codigo: XXX)")
+    const rawName = rawTexts[0];
+    if (!rawName || rawName.length < 3) continue;
+
+    // Numeric values per cell (after label stripping)
+    const numVals = cleanTexts.map(parseBrNumber);
+
+    // qty: first positive number in columns 1..n
+    const qtyIdx = numVals.findIndex((v, i) => i > 0 && v > 0);
+    if (qtyIdx < 0) continue;
+    const qty = numVals[qtyIdx];
+
+    // total: last positive number ≤ 50 000
+    let totalIdx = -1;
+    for (let i = numVals.length - 1; i > qtyIdx; i--) {
+      if (numVals[i] > 0 && numVals[i] <= 50_000) { totalIdx = i; break; }
+    }
+    if (totalIdx < 0) continue;
+    const total = numVals[totalIdx];
+
+    if (qty <= 0 || total <= 0) continue;
+
+    // unit: first cell between qtyIdx and totalIdx whose text is a known unit
+    let unit = "UN";
+    for (let i = qtyIdx + 1; i < totalIdx; i++) {
+      if (/^(UN|KG|LT|PC|CX|MT|GR|ML|G)\b/i.test(cleanTexts[i])) {
+        unit = cleanTexts[i].toUpperCase().split(/\W/)[0];
+        break;
+      }
+    }
+
+    // Extract code from "(Codigo: XXXXX)" pattern in name cell
+    const codeInName = rawName.match(/\(C[oó]digo:\s*(\d+)\)/i);
+    const code = codeInName ? codeInName[1] : "";
+    const name = rawName.replace(/\s*\(C[oó]digo:\s*\d+\)/i, "").trim();
+    if (name.length < 2) continue;
+
+    products.push({
+      product_code: code,
+      product_name: name,
+      product_name_normalized: normalize(name),
+      quantity: qty,
+      unit,
+      unit_price: parseFloat((total / qty).toFixed(4)),
+      total_price: total,
+    });
+  }
+
+  // ── Span-based layout (older portals) ─────────────────────────────────────
   if (products.length === 0) {
-    // Pattern: <span class="txtCodigo">name</span> followed by qty/price spans
     const spanBlockRegex =
-      /<span[^>]*class="[^"]*txtTit[^"]*"[^>]*>([\s\S]*?)<\/span>([\s\S]*?)(?=<span[^>]*class="[^"]*txtTit|id="linhaTotal"|<\/div>)/gi;
+      /<span[^>]*class="[^"]*txtTit[^"]*"[^>]*>([^<]+)<\/span>([\s\S]*?)(?=<span[^>]*class="[^"]*txtTit|id="linhaTotal"|<\/div>)/gi;
     let sm: RegExpExecArray | null;
     while ((sm = spanBlockRegex.exec(html)) !== null) {
-      const nameRaw = stripTags(sm[1]).trim();
+      const nameRaw = sm[1].trim();
       const rest = sm[2];
-      const qm = rest.match(/Qtde\.?:?\s*([\d.,]+)/i);
-      const um = rest.match(/\bUN\.?:?\s*(\w+)/i);
-      const upm = rest.match(/Vl\.?\s*Unit\.?[^R\d]*(R\$\s*)?([\d.,]+)/i);
-      const tm = rest.match(/Vl\.?\s*Total[^R\d]*(R\$\s*)?([\d.,]+)/i);
-      if (nameRaw && qm && upm) {
-        const codeMatch = nameRaw.match(/^\((\d+)\)\s*/);
-        const code = codeMatch ? codeMatch[1] : "";
-        const name = (codeMatch ? nameRaw.replace(codeMatch[0], "") : nameRaw).trim();
-        const qty = parseBrNumber(qm[1]);
-        const unitPrice = parseBrNumber(upm[2] || upm[1]);
-        const total = tm ? parseBrNumber(tm[2] || tm[1]) : qty * unitPrice;
-        if (name.length >= 2) {
-          products.push({
-            product_code: code,
-            product_name: name,
-            product_name_normalized: normalize(name),
-            quantity: qty,
-            unit: um ? um[1].toUpperCase() : "UN",
-            unit_price: unitPrice,
-            total_price: total,
-          });
-        }
-      }
+      const qm = rest.match(/Qtde[^:]*:\s*([\d.,]+)/i);
+      const um = rest.match(/\bUN[^:]*:\s*(\w+)/i);
+      const upm = rest.match(/Vl\.?\s*Unit[^:]*:\s*R?\$?\s*([\d.,]+)/i);
+      const tm = rest.match(/Vl\.?\s*Total[^:]*:\s*R?\$?\s*([\d.,]+)/i);
+      if (!nameRaw || !qm) continue;
+      const codeMatch = nameRaw.match(/^\((\d+)\)\s*/);
+      const code = codeMatch ? codeMatch[1] : "";
+      const name = (codeMatch ? nameRaw.replace(codeMatch[0], "") : nameRaw).trim();
+      const qty = parseBrNumber(qm[1]);
+      const unitPrice = upm ? parseBrNumber(upm[1]) : 0;
+      const total = tm ? parseBrNumber(tm[1]) : qty * unitPrice;
+      if (name.length < 2 || qty <= 0 || total <= 0 || total > 50_000) continue;
+      products.push({
+        product_code: code,
+        product_name: name,
+        product_name_normalized: normalize(name),
+        quantity: qty,
+        unit: um ? um[1].toUpperCase() : "UN",
+        unit_price: unitPrice || parseFloat((total / qty).toFixed(4)),
+        total_price: total,
+      });
     }
   }
 
@@ -328,11 +395,12 @@ function parseNfceHtml(html: string): ParsedNfce {
   const discountMatch = html.match(/Desconto[s]?\s*R?\$?\s*([\d.,]+)/i);
   if (discountMatch) totalDiscount = parseBrNumber(discountMatch[1]);
 
+  // Payment: "99 - Outros" pattern or keyword list
   let paymentMethod = "";
-  const payMatch = html.match(
-    /Forma\s*de\s*pagamento[\s\S]*?(Dinheiro|Cart[aã]o\s*de\s*[DC][eé]bito|Cart[aã]o\s*de\s*Cr[eé]dito|PIX|Outros)/i
-  );
-  if (payMatch) paymentMethod = payMatch[1];
+  const payMatch =
+    html.match(/(\d{2,3}\s*[-–]\s*(?:Dinheiro|Cart[aã]o|PIX|Outros|Cheque|Dep[oó]sito|Boleto)[^<\n]*)/i) ||
+    html.match(/Forma\s*de\s*pagamento[\s\S]{0,200}?(Dinheiro|Cart[aã]o\s*de\s*(?:[DC][eé]bito|Cr[eé]dito)|PIX|Outros)/i);
+  if (payMatch) paymentMethod = payMatch[1].trim();
 
   return {
     access_key: accessKey,
