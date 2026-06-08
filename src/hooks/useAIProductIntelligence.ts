@@ -92,7 +92,7 @@ export function useAIProductIntelligence() {
             const { data: existing } = await supabase
               .from("product_catalog")
               .select("id")
-              .eq("canonical_name", np.original_name)
+              .eq("canonical_name", np.canonical_name)
               .maybeSingle();
 
             if (existing) {

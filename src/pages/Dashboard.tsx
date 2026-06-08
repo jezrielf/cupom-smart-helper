@@ -81,7 +81,7 @@ export default function Dashboard() {
         if (result?.suggestions) setSuggestions(result.suggestions);
       });
     }
-  }, [recentProducts]);
+  }, [recentProducts, analyze, analyzing, suggestions.length]);
 
   const handleRefreshAI = () => {
     if (recentProducts && recentProducts.length > 0) {
