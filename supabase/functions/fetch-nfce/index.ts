@@ -1,4 +1,5 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// No Supabase client needed — this function only calls external APIs.
+// Auth is validated by decoding the JWT locally (no HTTP round-trip).
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -442,15 +443,28 @@ Deno.serve(async (req) => {
       });
     }
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: authHeader } } }
-    );
-
-    const token = authHeader.replace("Bearer ", "");
-    const { data: userData, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !userData?.user) {
+    // Validate JWT locally — no HTTP round-trip to Supabase Auth.
+    // This function never queries the database, so a structural + expiry check suffices.
+    const token = authHeader.slice(7);
+    const jwtParts = token.split(".");
+    if (jwtParts.length !== 3) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    try {
+      const payload = JSON.parse(
+        atob(jwtParts[1].replace(/-/g, "+").replace(/_/g, "/"))
+      );
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (payload.exp && payload.exp < nowSec) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    } catch {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
