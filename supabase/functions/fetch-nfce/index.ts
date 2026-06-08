@@ -428,9 +428,11 @@ Deno.serve(async (req) => {
     let html = "";
     let parsed: ParsedNfce | null = null;
 
-    // ===== Step 1: Firecrawl — markdown + rawHtml (JSF renders server-side, no JS needed) =====
+    // ===== Step 1: Firecrawl — BR location + html (follows JSF redirects, avoids SEFAZ geo-block) =====
+    let firecrawlStatus = 0;
+    let firecrawlError = "";
     if (firecrawlApiKey) {
-      console.log("Trying Firecrawl markdown+rawHtml...");
+      console.log("Trying Firecrawl (BR location, html+markdown)...");
       try {
         const fcRes = await fetchWithTimeout(
           "https://api.firecrawl.dev/v1/scrape",
@@ -442,26 +444,38 @@ Deno.serve(async (req) => {
             },
             body: JSON.stringify({
               url,
-              formats: ["markdown", "rawHtml"],
-              waitFor: 3000,
-              timeout: 20000,
+              formats: ["markdown", "html"],
+              waitFor: 5000,
+              timeout: 22000,
               onlyMainContent: false,
+              // Use Brazilian IPs — SEFAZ MG blocks foreign datacenter ranges
+              location: { country: "BR", languages: ["pt-BR", "pt"] },
+              headers: {
+                "Accept-Language": "pt-BR,pt;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              },
             }),
           },
-          24000
+          26000
         );
 
+        firecrawlStatus = fcRes.status;
         if (fcRes.ok) {
           const fcData = await fcRes.json();
           markdown = fcData.data?.markdown || fcData.markdown || "";
-          html = fcData.data?.rawHtml || fcData.rawHtml || fcData.data?.html || fcData.html || "";
-          console.log(`Firecrawl OK — markdown: ${markdown.length} chars, rawHtml: ${html.length} chars`);
+          html = fcData.data?.html || fcData.html || "";
+          console.log(`Firecrawl OK (${fcRes.status}) — markdown: ${markdown.length} chars, html: ${html.length} chars`);
+          // Log first 300 chars to help debug parsing issues
+          if (markdown) console.log("Markdown preview:", markdown.slice(0, 300));
+          else if (html) console.log("HTML preview:", html.slice(0, 300));
         } else {
           const errBody = await fcRes.text().catch(() => "");
-          console.warn(`Firecrawl status ${fcRes.status}:`, errBody.slice(0, 200));
+          firecrawlError = errBody.slice(0, 300);
+          console.warn(`Firecrawl ${fcRes.status}:`, firecrawlError);
         }
       } catch (e) {
-        console.warn("Firecrawl error:", e instanceof Error ? e.message : e);
+        firecrawlError = e instanceof Error ? e.message : String(e);
+        console.warn("Firecrawl error:", firecrawlError);
       }
     }
 
@@ -530,12 +544,30 @@ Deno.serve(async (req) => {
 
     // ===== Final check =====
     if (!parsed || parsed.products.length === 0) {
-      const detail = !markdown && !html
-        ? "Não foi possível acessar o portal da SEFAZ. Verifique sua conexão ou tente novamente."
-        : "Não foi possível extrair os produtos do cupom. O portal pode ter alterado seu layout.";
-      console.error("No products found after all attempts");
+      let detail: string;
+      let debugHint: string;
+
+      if (!markdown && !html) {
+        // Nothing was fetched at all
+        if (firecrawlStatus >= 400) {
+          detail = `Portal da SEFAZ inacessível (Firecrawl ${firecrawlStatus}). Tente novamente.`;
+          debugHint = `firecrawl_status=${firecrawlStatus} error=${firecrawlError.slice(0, 100)}`;
+        } else if (firecrawlError) {
+          detail = "Não foi possível acessar o portal da SEFAZ. Verifique sua conexão.";
+          debugHint = `firecrawl_error=${firecrawlError.slice(0, 100)}`;
+        } else {
+          detail = "O portal da SEFAZ não retornou dados. Tente novamente em instantes.";
+          debugHint = "all_empty";
+        }
+      } else {
+        // Content was fetched but products weren't found — structure mismatch
+        detail = "Não foi possível extrair os produtos. O portal pode ter alterado seu layout.";
+        debugHint = `markdown=${markdown.length}chars html=${html.length}chars preview=${(markdown || html).slice(0, 150).replace(/\s+/g, " ")}`;
+      }
+
+      console.error("No products. Debug:", debugHint);
       return new Response(
-        JSON.stringify({ error: detail }),
+        JSON.stringify({ error: detail, _debug: debugHint }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
