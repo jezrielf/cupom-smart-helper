@@ -1,11 +1,12 @@
-// No Supabase client needed — this function only calls external APIs.
-// Auth is validated by decoding the JWT locally (no HTTP round-trip).
+// fetch-nfce — direct fetch from SEFAZ MG portal, no Firecrawl dependency
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function normalize(text: string): string {
   return text
@@ -16,7 +17,7 @@ function normalize(text: string): string {
 }
 
 function stripTags(html: string): string {
-  return html.replace(/<[^>]*>/g, "").trim();
+  return html.replace(/<[^>]*>/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
 function parseBrNumber(s: string): number {
@@ -26,30 +27,41 @@ function parseBrNumber(s: string): number {
   const hasDot = t.includes(".");
   const hasComma = t.includes(",");
   if (hasDot && hasComma) {
-    return parseFloat(
-      t.lastIndexOf(",") > t.lastIndexOf(".")
-        ? t.replace(/\./g, "").replace(",", ".")
-        : t.replace(/,/g, "")
-    ) || 0;
+    return (
+      parseFloat(
+        t.lastIndexOf(",") > t.lastIndexOf(".")
+          ? t.replace(/\./g, "").replace(",", ".")
+          : t.replace(/,/g, ""),
+      ) || 0
+    );
   }
   if (hasComma) return parseFloat(t.replace(",", ".")) || 0;
-  // dot only: parseFloat handles both 12.99 and 12.990 correctly as decimals
   return parseFloat(t) || 0;
 }
 
 function parsePurchaseDate(dateStr: string | undefined): string {
   if (!dateStr) return new Date().toISOString();
-  const parts = dateStr.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):?(\d{2})?/);
-  if (!parts) return new Date().toISOString();
+  const p = dateStr.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):?(\d{2})?/);
+  if (!p) return new Date().toISOString();
   return new Date(
-    parseInt(parts[3]),
-    parseInt(parts[2]) - 1,
-    parseInt(parts[1]),
-    parseInt(parts[4]),
-    parseInt(parts[5]),
-    parseInt(parts[6] || "0")
+    parseInt(p[3]),
+    parseInt(p[2]) - 1,
+    parseInt(p[1]),
+    parseInt(p[4]),
+    parseInt(p[5]),
+    parseInt(p[6] || "0"),
   ).toISOString();
 }
+
+// Strip "Label: " injected by some portals: "Qtde total de itens: 3.0000" → "3.0000"
+function stripCellLabel(text: string): string {
+  return text
+    .replace(/^[A-Za-záàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ ]+:\s*/i, "")
+    .replace(/^R\$\s*/i, "")
+    .trim();
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Product {
   product_code: string;
@@ -72,271 +84,53 @@ interface ParsedNfce {
   item_count: number;
 }
 
-// ---------- Markdown parser ----------
+// ─── Parser A: HTML table rows ─────────────────────────────────────────────────
+// Works on the raw HTML from SEFAZ portal.
+// SEFAZ MG columns: [name+code | qty (with optional label) | unit | total]
+// No unit-price column — we derive it from total/qty.
 
-// Strip "Label: " prefix injected by Firecrawl when it inlines table headers into cells.
-// e.g. "Qtde total de itens: 3.0000" → "3.0000"
-//      "Valor total RS: R$ 17,94"    → "17,94"
-function stripCellLabel(text: string): string {
-  return text
-    .replace(/^[A-Za-záàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ ]+:\s*/i, "")
-    .replace(/^R\$\s*/i, "")
-    .trim();
-}
-
-function parseNfceMarkdown(markdown: string): ParsedNfce {
+function parseHtmlTable(html: string): Product[] {
   const products: Product[] = [];
+  const rows = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? [];
 
-  // Access key (44 consecutive digits)
-  const accessKeyMatch =
-    markdown.match(/Chave de acesso[^:\n]*:?\s*[\n\s]*([\d\s]{44,55})/) ||
-    markdown.match(/(\d{44})/);
-  const accessKey = accessKeyMatch
-    ? accessKeyMatch[1].replace(/\s/g, "").slice(0, 44)
-    : "";
+  for (const row of rows) {
+    const cells = row.match(/<td[^>]*>([\s\S]*?)<\/td>/gi);
+    if (!cells || cells.length < 4) continue;
 
-  // Emitter name
-  let emitterName = "";
-  const nameMatch =
-    markdown.match(/^#\s+(.+)/m) ||
-    markdown.match(/Raz[aã]o Social[^:]*:\s*([^\n]+)/i) ||
-    markdown.match(/\*\*([^*\n]{5,})\*\*/);
-  if (nameMatch) emitterName = nameMatch[1].trim();
+    const raw = cells.map((c) => stripTags(c).trim());
+    const clean = raw.map(stripCellLabel);
 
-  let cnpj = "";
-  const cnpjMatch =
-    markdown.match(/CNPJ[:\s]+([\d.\/-]+)/i) ||
-    markdown.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
-  if (cnpjMatch) cnpj = cnpjMatch[1].replace(/[.\/-]/g, "");
-
-  let address = "";
-  const addrMatch = markdown.match(/Endere[cç]o[^:]*:\s*([^\n]+)/i);
-  if (addrMatch) address = addrMatch[1].trim();
-
-  let purchaseDate = new Date().toISOString();
-  const dateMatch =
-    markdown.match(/Emiss[aã]o[^:]*:\s*([\d\/]+ [\d:]+)/i) ||
-    markdown.match(/(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2})/);
-  if (dateMatch) purchaseDate = parsePurchaseDate(dateMatch[1]);
-
-  // ── Strategy 1: SEFAZ MG pipe format ──────────────────────────────────────
-  // Firecrawl converts the HTML table to markdown and inlines the column header
-  // into each cell: "NAME (Codigo: CODE) | Qtde total de itens: QTY | UN: UNIT | Valor total RS: R$ PRICE"
-  const sefazMgRegex =
-    /^[|\s]*(.+?)\s*\(C[oó]digo:\s*(\d+)\)\s*\|[^|]*?:\s*([\d.,]+)\s*\|\s*UN:\s*(\w+)\s*\|[^|]*?R\$\s*([\d.,]+)/gim;
-  let m: RegExpExecArray | null;
-  while ((m = sefazMgRegex.exec(markdown)) !== null) {
-    const name = m[1].replace(/^[|*\s>]+/, "").trim();
-    if (name.length < 2) continue;
-    const qty = parseBrNumber(m[3]);
-    const unit = m[4].toUpperCase();
-    const total = parseBrNumber(m[5]);
-    if (qty <= 0 || total <= 0 || total > 50_000) continue;
-    products.push({
-      product_code: m[2],
-      product_name: name,
-      product_name_normalized: normalize(name),
-      quantity: qty,
-      unit,
-      unit_price: parseFloat((total / qty).toFixed(4)),
-      total_price: total,
-    });
-  }
-
-  // ── Strategy 2: generic 4-column markdown table ────────────────────────────
-  // Columns: name | qty | unit | total  (with optional label prefixes in cells)
-  if (products.length === 0) {
-    const tableRow4 = /^\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|/gm;
-    while ((m = tableRow4.exec(markdown)) !== null) {
-      const cols = [m[1], m[2], m[3], m[4]].map((c) => c.trim());
-      if (cols.some((c) => /^[-:]+$/.test(c))) continue; // separator row
-      const cleaned = cols.map(stripCellLabel);
-      const qty = parseBrNumber(cleaned[1]);
-      const total = parseBrNumber(cleaned[3]);
-      const name = cols[0].replace(/\s*\(C[oó]digo:\s*\d+\)/i, "").replace(/^[|*\s>]+/, "").trim();
-      const codeMatch = cols[0].match(/\(C[oó]digo:\s*(\d+)\)/i);
-      const unit = /^(UN|KG|LT|PC|CX|MT|GR|ML)\b/i.test(cleaned[2]) ? cleaned[2].toUpperCase() : "UN";
-      if (name.length < 2 || qty <= 0 || total <= 0 || total > 50_000) continue;
-      products.push({
-        product_code: codeMatch ? codeMatch[1] : "",
-        product_name: name,
-        product_name_normalized: normalize(name),
-        quantity: qty,
-        unit,
-        unit_price: parseFloat((total / qty).toFixed(4)),
-        total_price: total,
-      });
-    }
-  }
-
-  // ── Strategy 3: 6-column table (other state portals) ──────────────────────
-  if (products.length === 0) {
-    const tableRow6 = /^\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|/gm;
-    while ((m = tableRow6.exec(markdown)) !== null) {
-      const cols = [m[1], m[2], m[3], m[4], m[5], m[6]].map((c) => c.trim());
-      if (cols.some((c) => /^[-:]+$/.test(c))) continue;
-      const nums = cols.map((c) => parseBrNumber(stripCellLabel(c)));
-      let nameIdx = -1, maxLen = 0;
-      cols.forEach((c, i) => { if (!nums[i] && c.length > maxLen) { maxLen = c.length; nameIdx = i; } });
-      if (nameIdx === -1) continue;
-      const positives = nums.map((v, i) => ({ i, v })).filter((x) => x.v > 0 && x.v < 50_000);
-      if (positives.length < 2) continue;
-      const qty = positives[0].v;
-      const total = positives[positives.length - 1].v;
-      const name = cols[nameIdx].replace(/^\(?\d+\)?\s*/, "").trim();
-      if (name.length < 2) continue;
-      const unitIdx = cols.findIndex((c, i) => i !== nameIdx && /^(UN|KG|LT|PC|CX|MT|GR|ML)\b/i.test(c.trim()));
-      products.push({
-        product_code: "",
-        product_name: name,
-        product_name_normalized: normalize(name),
-        quantity: qty,
-        unit: unitIdx >= 0 ? cols[unitIdx].trim().toUpperCase() : "UN",
-        unit_price: parseFloat((total / qty).toFixed(4)),
-        total_price: total,
-      });
-    }
-  }
-
-  // Totals
-  let totalAmount = 0;
-  const totalMatch =
-    markdown.match(/Valor\s*[Tt]otal\s*R\$[^|]*?R?\$?\s*([\d.,]+)/i) ||
-    markdown.match(/Valor\s*[Tt]otal[^R\d]*(R\$\s*)?([\d.,]+)/i) ||
-    markdown.match(/TOTAL[^R\d]*(R\$\s*)?([\d.,]+)/i);
-  if (totalMatch) totalAmount = parseBrNumber(totalMatch[2] || totalMatch[1]);
-  if (!totalAmount && products.length > 0)
-    totalAmount = products.reduce((s, p) => s + p.total_price, 0);
-
-  let totalDiscount = 0;
-  const discountMatch = markdown.match(/Desconto[s]?[^R\d]*(R\$\s*)?([\d.,]+)/i);
-  if (discountMatch) totalDiscount = parseBrNumber(discountMatch[2] || discountMatch[1]);
-
-  // Payment: "99 - Outros", "01 - Dinheiro", etc.
-  let paymentMethod = "";
-  const payMatch =
-    markdown.match(/(\d{2,3}\s*[-–]\s*(?:Dinheiro|Cart[aã]o|PIX|Outros|Cheque|Dep[oó]sito|Boleto)[^\n]*)/i) ||
-    markdown.match(/Forma[^:]*:\s*([^\n|]{3,50})/i);
-  if (payMatch) paymentMethod = payMatch[1].trim();
-
-  return {
-    access_key: accessKey,
-    emitter: { name: emitterName, cnpj, address },
-    purchase_date: purchaseDate,
-    products,
-    total_amount: totalAmount,
-    total_discount: totalDiscount,
-    payment_method: paymentMethod,
-    item_count: products.length,
-  };
-}
-
-// ---------- HTML regex parser ----------
-
-// Extract safe text from an HTML match — never return raw attribute values.
-// Uses [^<]+ to stop at the next tag, avoiding capturing garbage like "5%;">".
-function safeText(match: RegExpMatchArray | null): string {
-  if (!match) return "";
-  return stripTags(match[1] ?? match[0]).trim();
-}
-
-function parseNfceHtml(html: string): ParsedNfce {
-  const products: Product[] = [];
-
-  // Access key
-  const accessKeyMatch =
-    html.match(/Chave de acesso[^<]*<[^>]*>[^<]*(\d{44})/i) ||
-    html.match(/(\d{44})/);
-  const accessKey = accessKeyMatch ? accessKeyMatch[1] : "";
-
-  // ── Emitter name ──────────────────────────────────────────────────────────
-  // Try SEFAZ MG classes before falling through to generic patterns.
-  // IMPORTANT: use [^<]+ so we never capture attribute values or nested tags.
-  let emitterName = "";
-  const emitterPatterns = [
-    /<[^>]+class="[^"]*NomeEmit[^"]*"[^>]*>([^<]{3,})</i,
-    /<[^>]+id="[^"]*NomeEmit[^"]*"[^>]*>([^<]{3,})</i,
-    /<[^>]+class="[^"]*txtTit[^"]*"[^>]*>([^<]{3,})</i,
-    /<[^>]+class="[^"]*txtTopo[^"]*"[^>]*>([^<]{3,})</i,
-    /Raz[aã]o Social[^:]*:\s*([^<\n]{3,})/i,
-  ];
-  for (const pat of emitterPatterns) {
-    const m = html.match(pat);
-    if (m) {
-      const candidate = stripTags(m[1]).trim();
-      // Reject if it looks like an HTML fragment (contains >  or only digits/symbols)
-      if (candidate.length > 3 && !/[><%]/.test(candidate) && /[A-Za-z]/.test(candidate)) {
-        emitterName = candidate;
-        break;
-      }
-    }
-  }
-
-  let cnpj = "";
-  const cnpjMatch =
-    html.match(/CNPJ[:\s]+([\d.\/-]+)/i) ||
-    html.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
-  if (cnpjMatch) cnpj = cnpjMatch[1].replace(/[.\/-]/g, "");
-
-  let address = "";
-  const addrMatch = html.match(/Endere[cç]o[^:]*:\s*([^<\n]{5,})/i);
-  if (addrMatch) address = stripTags(addrMatch[1]).trim();
-
-  let purchaseDate = new Date().toISOString();
-  const dateMatch =
-    html.match(/Emiss[aã]o[^:]*:\s*([\d\/]+\s+[\d:]+)/i) ||
-    html.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
-  if (dateMatch) purchaseDate = parsePurchaseDate(dateMatch[1] ?? `${dateMatch[1]} ${dateMatch[2]}`);
-
-  // ── Table-based products ───────────────────────────────────────────────────
-  // SEFAZ MG columns: [name+code, qty, unit, total]   (NO unit-price column)
-  // Other portals:    [name, qty, unit_price, total, unit, ...]
-  // Strategy: strip embedded labels, find qty as first number, total as last,
-  // unit as any UN/KG/… column between them. Never require unitPrice > 0.
-  const productBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? [];
-  for (const block of productBlocks) {
-    const tdMatches = block.match(/<td[^>]*>([\s\S]*?)<\/td>/gi);
-    if (!tdMatches || tdMatches.length < 4) continue;
-
-    // Raw cell text
-    const rawTexts = tdMatches.map((c) => stripTags(c).trim());
-    // Strip "Label: " prefixes (e.g. "Qtde total de itens: 3.0000" → "3.0000")
-    const cleanTexts = rawTexts.map(stripCellLabel);
-
-    // Column 0 = product name (possibly with "(Codigo: XXX)")
-    const rawName = rawTexts[0];
+    // col 0: product name (possibly "NAME (Codigo: CODE)")
+    const rawName = raw[0];
     if (!rawName || rawName.length < 3) continue;
 
-    // Numeric values per cell (after label stripping)
-    const numVals = cleanTexts.map(parseBrNumber);
+    const nums = clean.map(parseBrNumber);
 
-    // qty: first positive number in columns 1..n
-    const qtyIdx = numVals.findIndex((v, i) => i > 0 && v > 0);
+    // qty = first positive number after col 0
+    const qtyIdx = nums.findIndex((v, i) => i > 0 && v > 0);
     if (qtyIdx < 0) continue;
-    const qty = numVals[qtyIdx];
+    const qty = nums[qtyIdx];
 
-    // total: last positive number ≤ 50 000
+    // total = last positive number ≤ 50 000
     let totalIdx = -1;
-    for (let i = numVals.length - 1; i > qtyIdx; i--) {
-      if (numVals[i] > 0 && numVals[i] <= 50_000) { totalIdx = i; break; }
+    for (let i = nums.length - 1; i > qtyIdx; i--) {
+      if (nums[i] > 0 && nums[i] <= 50_000) { totalIdx = i; break; }
     }
     if (totalIdx < 0) continue;
-    const total = numVals[totalIdx];
-
+    const total = nums[totalIdx];
     if (qty <= 0 || total <= 0) continue;
 
-    // unit: first cell between qtyIdx and totalIdx whose text is a known unit
+    // unit: first cell between qty and total that looks like a unit code
     let unit = "UN";
     for (let i = qtyIdx + 1; i < totalIdx; i++) {
-      if (/^(UN|KG|LT|PC|CX|MT|GR|ML|G)\b/i.test(cleanTexts[i])) {
-        unit = cleanTexts[i].toUpperCase().split(/\W/)[0];
+      if (/^(UN|KG|LT|PC|CX|MT|GR|ML|G)\b/i.test(clean[i])) {
+        unit = clean[i].toUpperCase().split(/\W/)[0];
         break;
       }
     }
 
-    // Extract code from "(Codigo: XXXXX)" pattern in name cell
-    const codeInName = rawName.match(/\(C[oó]digo:\s*(\d+)\)/i);
-    const code = codeInName ? codeInName[1] : "";
+    const codeMatch = rawName.match(/\(C[oó]digo:\s*(\d+)\)/i);
+    const code = codeMatch ? codeMatch[1] : "";
     const name = rawName.replace(/\s*\(C[oó]digo:\s*\d+\)/i, "").trim();
     if (name.length < 2) continue;
 
@@ -351,57 +145,146 @@ function parseNfceHtml(html: string): ParsedNfce {
     });
   }
 
-  // ── Span-based layout (older portals) ─────────────────────────────────────
+  return products;
+}
+
+// ─── Parser B: plain-text regex ───────────────────────────────────────────────
+// Fallback when table structure doesn't match.
+// Works on the full plain text after stripping all HTML tags.
+// Pattern from SEFAZ MG:
+//   "NAME (Codigo: CODE) ... QTY ... UN: UNIT ... R$ PRICE"
+
+function parsePlainText(text: string): Product[] {
+  const products: Product[] = [];
+
+  // Strategy 1 — user-provided regex (works on stripped page text)
+  const re1 =
+    /([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][^(]{2,}?)\(C[oó]digo:\s*(\d+)\)[\s\S]*?(\d+[.,]\d+)\s*UN:\s*(\w+)[\s\S]*?R\$\s*([\d.,]+)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re1.exec(text)) !== null) {
+    const name = m[1].replace(/[|\s]+$/, "").trim();
+    if (name.length < 2) continue;
+    const code = m[2];
+    const qty = parseBrNumber(m[3]);
+    const unit = m[4].toUpperCase();
+    const total = parseBrNumber(m[5]);
+    if (qty <= 0 || total <= 0 || total > 50_000) continue;
+    products.push({
+      product_code: code,
+      product_name: name,
+      product_name_normalized: normalize(name),
+      quantity: qty,
+      unit,
+      unit_price: parseFloat((total / qty).toFixed(4)),
+      total_price: total,
+    });
+  }
+
+  // Strategy 2 — pipe-separated markdown-style lines (Firecrawl legacy format)
   if (products.length === 0) {
-    const spanBlockRegex =
-      /<span[^>]*class="[^"]*txtTit[^"]*"[^>]*>([^<]+)<\/span>([\s\S]*?)(?=<span[^>]*class="[^"]*txtTit|id="linhaTotal"|<\/div>)/gi;
-    let sm: RegExpExecArray | null;
-    while ((sm = spanBlockRegex.exec(html)) !== null) {
-      const nameRaw = sm[1].trim();
-      const rest = sm[2];
-      const qm = rest.match(/Qtde[^:]*:\s*([\d.,]+)/i);
-      const um = rest.match(/\bUN[^:]*:\s*(\w+)/i);
-      const upm = rest.match(/Vl\.?\s*Unit[^:]*:\s*R?\$?\s*([\d.,]+)/i);
-      const tm = rest.match(/Vl\.?\s*Total[^:]*:\s*R?\$?\s*([\d.,]+)/i);
-      if (!nameRaw || !qm) continue;
-      const codeMatch = nameRaw.match(/^\((\d+)\)\s*/);
-      const code = codeMatch ? codeMatch[1] : "";
-      const name = (codeMatch ? nameRaw.replace(codeMatch[0], "") : nameRaw).trim();
-      const qty = parseBrNumber(qm[1]);
-      const unitPrice = upm ? parseBrNumber(upm[1]) : 0;
-      const total = tm ? parseBrNumber(tm[1]) : qty * unitPrice;
-      if (name.length < 2 || qty <= 0 || total <= 0 || total > 50_000) continue;
+    const re2 =
+      /^[|\s]*(.+?)\s*\(C[oó]digo:\s*(\d+)\)\s*[|│]\s*[^|│]*?:\s*([\d.,]+)\s*[|│]\s*UN:\s*(\w+)\s*[|│][^|│]*?R\$\s*([\d.,]+)/gim;
+    while ((m = re2.exec(text)) !== null) {
+      const name = m[1].replace(/^[|*\s>]+/, "").trim();
+      if (name.length < 2) continue;
+      const qty = parseBrNumber(m[3]);
+      const unit = m[4].toUpperCase();
+      const total = parseBrNumber(m[5]);
+      if (qty <= 0 || total <= 0 || total > 50_000) continue;
       products.push({
-        product_code: code,
+        product_code: m[2],
         product_name: name,
         product_name_normalized: normalize(name),
         quantity: qty,
-        unit: um ? um[1].toUpperCase() : "UN",
-        unit_price: unitPrice || parseFloat((total / qty).toFixed(4)),
+        unit,
+        unit_price: parseFloat((total / qty).toFixed(4)),
         total_price: total,
       });
     }
   }
 
-  // Totals
+  return products;
+}
+
+// ─── Full HTML parser ──────────────────────────────────────────────────────────
+
+function parseNfceHtml(html: string): ParsedNfce {
+  // ── Access key ──
+  const akMatch =
+    html.match(/Chave de acesso[^<]*<[^>]*>[^<]*(\d{44})/i) ||
+    html.match(/(\d{44})/);
+  const accessKey = akMatch ? akMatch[1] : "";
+
+  // ── Emitter name ── (never captures HTML attribute values)
+  let emitterName = "";
+  const namePatterns = [
+    /<[^>]+class="[^"]*NomeEmit[^"]*"[^>]*>([^<]{3,})</i,
+    /<[^>]+id="[^"]*NomeEmit[^"]*"[^>]*>([^<]{3,})</i,
+    /<[^>]+class="[^"]*txtTit[^"]*"[^>]*>([^<]{3,})</i,
+    /<h4[^>]*>([^<]{3,})<\/h4>/i,
+    /<h3[^>]*>([^<]{3,})<\/h3>/i,
+    /<[^>]+class="[^"]*txtTopo[^"]*"[^>]*>([^<]{3,})</i,
+    /Raz[aã]o Social[^:]*:\s*([^<\n]{3,})/i,
+  ];
+  for (const pat of namePatterns) {
+    const nm = html.match(pat);
+    if (nm) {
+      const cand = stripTags(nm[1]).trim();
+      if (cand.length > 3 && !/[><%{]/.test(cand) && /[A-Za-z]/.test(cand)) {
+        emitterName = cand;
+        break;
+      }
+    }
+  }
+
+  // ── CNPJ ──
+  let cnpj = "";
+  const cnpjM =
+    html.match(/CNPJ[:\s]+([\d.\/-]+)/i) ||
+    html.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
+  if (cnpjM) cnpj = cnpjM[1].replace(/[.\/-]/g, "");
+
+  // ── Address ──
+  let address = "";
+  const addrM = html.match(/Endere[cç]o[^:]*:\s*([^<\n]{5,})/i);
+  if (addrM) address = stripTags(addrM[1]).trim();
+
+  // ── Purchase date ──
+  let purchaseDate = new Date().toISOString();
+  const dateM =
+    html.match(/Emiss[aã]o[^:]*:\s*([\d\/]+\s+[\d:]+)/i) ||
+    html.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+  if (dateM) purchaseDate = parsePurchaseDate(dateM[1] ?? `${dateM[1]} ${dateM[2]}`);
+
+  // ── Products: try table parser first, then plain-text fallback ──
+  let products = parseHtmlTable(html);
+  console.log(`Table parser: ${products.length} products`);
+
+  if (products.length === 0) {
+    const plainText = stripTags(html);
+    products = parsePlainText(plainText);
+    console.log(`Text parser: ${products.length} products`);
+  }
+
+  // ── Totals ──
   let totalAmount = 0;
-  const totalMatch =
+  const totalM =
     html.match(/Valor\s*total\s*R?\$?\s*([\d.,]+)/i) ||
     html.match(/TOTAL\s*R?\$?\s*([\d.,]+)/i);
-  if (totalMatch) totalAmount = parseBrNumber(totalMatch[1]);
+  if (totalM) totalAmount = parseBrNumber(totalM[1]);
   if (!totalAmount && products.length > 0)
     totalAmount = products.reduce((s, p) => s + p.total_price, 0);
 
   let totalDiscount = 0;
-  const discountMatch = html.match(/Desconto[s]?\s*R?\$?\s*([\d.,]+)/i);
-  if (discountMatch) totalDiscount = parseBrNumber(discountMatch[1]);
+  const discM = html.match(/Desconto[s]?\s*R?\$?\s*([\d.,]+)/i);
+  if (discM) totalDiscount = parseBrNumber(discM[1]);
 
-  // Payment: "99 - Outros" pattern or keyword list
+  // Payment: "99 - Outros" or keyword
   let paymentMethod = "";
-  const payMatch =
+  const payM =
     html.match(/(\d{2,3}\s*[-–]\s*(?:Dinheiro|Cart[aã]o|PIX|Outros|Cheque|Dep[oó]sito|Boleto)[^<\n]*)/i) ||
-    html.match(/Forma\s*de\s*pagamento[\s\S]{0,200}?(Dinheiro|Cart[aã]o\s*de\s*(?:[DC][eé]bito|Cr[eé]dito)|PIX|Outros)/i);
-  if (payMatch) paymentMethod = payMatch[1].trim();
+    html.match(/Forma\s*de\s*pagamento[\s\S]{0,200}?(Dinheiro|Cart[aã]o\s*(?:de\s*)?(?:[DC][eé]bito|Cr[eé]dito)|PIX|Outros)/i);
+  if (payM) paymentMethod = payM[1].trim();
 
   return {
     access_key: accessKey,
@@ -415,19 +298,34 @@ function parseNfceHtml(html: string): ParsedNfce {
   };
 }
 
-// ---------- Fetch with timeout ----------
+// ─── Fetch helper ─────────────────────────────────────────────────────────────
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, { ...init, signal: ctrl.signal });
   } finally {
     clearTimeout(timer);
   }
 }
 
-// ---------- Main handler ----------
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Accept":
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.5,en;q=0.3",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Connection": "keep-alive",
+  "Upgrade-Insecure-Requests": "1",
+};
+
+// ─── Main handler ─────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -435,6 +333,7 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // ── Auth: validate JWT locally, no HTTP round-trip ──
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -442,12 +341,8 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    // Validate JWT locally — no HTTP round-trip to Supabase Auth.
-    // This function never queries the database, so a structural + expiry check suffices.
     const token = authHeader.slice(7);
-    const jwtParts = token.split(".");
-    if (jwtParts.length !== 3) {
+    if (token.split(".").length !== 3) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -455,10 +350,9 @@ Deno.serve(async (req) => {
     }
     try {
       const payload = JSON.parse(
-        atob(jwtParts[1].replace(/-/g, "+").replace(/_/g, "/"))
+        atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")),
       );
-      const nowSec = Math.floor(Date.now() / 1000);
-      if (payload.exp && payload.exp < nowSec) {
+      if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
           status: 401,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -471,235 +365,129 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── Parse body ──
     const body = await req.json();
-    let url = body.url || "";
-    const accessKey = body.access_key || "";
+    let url: string = (body.url || "").trim();
+    const accessKey: string = (body.access_key || "").trim();
 
     if (!url && !accessKey) {
       return new Response(
         JSON.stringify({ error: "URL ou chave de acesso é obrigatória" }),
-        { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
+    // ── Build URL from access_key if needed ──
     if (!url && accessKey) {
       const cleanKey = accessKey.replace(/\s/g, "");
       if (cleanKey.length !== 44 || !/^\d+$/.test(cleanKey)) {
         return new Response(
           JSON.stringify({ error: "Chave de acesso inválida. Deve conter 44 dígitos." }),
-          { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
         );
       }
       url = `https://portalsped.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?p=${cleanKey}`;
     }
 
-    if (!url.includes("nfce") && !url.includes("nfe") && !url.includes("fazenda")) {
-      try { new URL(url); } catch {
-        return new Response(
-          JSON.stringify({ error: "URL inválida" }),
-          { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
+    // Normalize SEFAZ MG domain variant
     url = url.replace("nfce.fazenda.mg.gov.br", "portalsped.fazenda.mg.gov.br");
     console.log("Processing URL:", url);
 
-    const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
-    let markdown = "";
+    // ── Fetch attempt 1: URL as-is ──
     let html = "";
-    let parsed: ParsedNfce | null = null;
+    let lastStatus = 0;
 
-    // Helper: call Firecrawl and return { markdown, html, status, error }
-    async function callFirecrawl(opts: Record<string, unknown>) {
-      try {
-        const res = await fetchWithTimeout(
-          "https://api.firecrawl.dev/v1/scrape",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${firecrawlApiKey}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ url, onlyMainContent: false, ...opts }),
-          },
-          (opts.timeout as number ?? 20000) + 4000 // outer AbortController slightly longer than inner
+    const tryFetch = async (fetchUrl: string, timeoutMs: number): Promise<string> => {
+      console.log("Fetching:", fetchUrl);
+      const res = await fetchWithTimeout(
+        fetchUrl,
+        { headers: BROWSER_HEADERS, redirect: "follow" },
+        timeoutMs,
+      );
+      lastStatus = res.status;
+      console.log(`Status: ${res.status}  Content-Type: ${res.headers.get("content-type") ?? "-"}`);
+      if (res.ok) {
+        const text = await res.text();
+        console.log(`HTML size: ${text.length} chars`);
+        console.log(`HTML preview: ${text.slice(0, 400).replace(/\s+/g, " ")}`);
+        return text;
+      }
+      if (res.status === 404) throw Object.assign(new Error("not_found"), { status: 404 });
+      throw Object.assign(new Error(`http_${res.status}`), { status: res.status });
+    };
+
+    try {
+      html = await tryFetch(url, 15000);
+    } catch (e: unknown) {
+      const err = e as { status?: number; message?: string };
+      if (err.status === 404) {
+        return new Response(
+          JSON.stringify({ error: "Cupom fiscal não encontrado no portal da SEFAZ." }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
         );
-        if (res.ok) {
-          const d = await res.json();
-          return {
-            status: res.status,
-            markdown: (d.data?.markdown || d.markdown || "") as string,
-            html: (d.data?.html || d.html || "") as string,
-            error: "",
-          };
-        }
-        const errText = await res.text().catch(() => "");
-        return { status: res.status, markdown: "", html: "", error: errText.slice(0, 200) };
-      } catch (e) {
-        return { status: 0, markdown: "", html: "", error: e instanceof Error ? e.message : String(e) };
       }
-    }
+      console.warn("Attempt 1 failed:", err.message);
 
-    // ===== Step 1: Firecrawl attempt 1 — standard desktop scrape =====
-    let firecrawlStatus = 0;
-    let firecrawlError = "";
-    if (firecrawlApiKey) {
-      console.log("Firecrawl attempt 1 (desktop)...");
-      const fc1 = await callFirecrawl({
-        formats: ["markdown", "html"],
-        waitFor: 5000,
-        timeout: 20000,
-        headers: { "Accept-Language": "pt-BR,pt;q=0.9" },
-      });
-      firecrawlStatus = fc1.status;
-      firecrawlError = fc1.error;
-      markdown = fc1.markdown;
-      html = fc1.html;
-      console.log(`FC1 status=${fc1.status} md=${markdown.length} html=${html.length}`);
-      if (markdown) console.log("FC1 md preview:", markdown.slice(0, 200));
-      else if (html) console.log("FC1 html preview:", html.slice(0, 200));
-
-      // ===== Step 1b: Firecrawl attempt 2 — mobile mode (bypass some portal guards) =====
-      if (!markdown && !html && firecrawlApiKey) {
-        console.log("Firecrawl attempt 2 (mobile)...");
-        const fc2 = await callFirecrawl({
-          formats: ["markdown", "html"],
-          waitFor: 6000,
-          timeout: 18000,
-          mobile: true,
-          headers: {
-            "Accept-Language": "pt-BR,pt;q=0.9",
-            "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-          },
-        });
-        if (fc2.markdown || fc2.html) {
-          firecrawlStatus = fc2.status;
-          firecrawlError = fc2.error;
-          markdown = fc2.markdown;
-          html = fc2.html;
-          console.log(`FC2 status=${fc2.status} md=${markdown.length} html=${html.length}`);
-          if (markdown) console.log("FC2 md preview:", markdown.slice(0, 200));
-        } else {
-          console.warn(`FC2 also empty. status=${fc2.status} err=${fc2.error.slice(0, 100)}`);
-          if (!firecrawlError) firecrawlError = fc2.error;
-          if (!firecrawlStatus) firecrawlStatus = fc2.status;
+      // ── Fetch attempt 2: chaveNFe query param format ──
+      const cleanKey = (accessKey || url.match(/p=(\d{44})/)?.[1] || "").replace(/\s/g, "");
+      if (cleanKey.length === 44) {
+        const altUrl = `https://portalsped.fazenda.mg.gov.br/portalnfce/sistema/qrcode.xhtml?chaveNFe=${cleanKey}`;
+        try {
+          html = await tryFetch(altUrl, 12000);
+        } catch (e2: unknown) {
+          console.warn("Attempt 2 failed:", (e2 as Error).message);
         }
       }
     }
 
-    // ===== Step 2: Parse Firecrawl markdown =====
-    if (markdown) {
-      const mdResult = parseNfceMarkdown(markdown);
-      if (mdResult.products.length > 0) {
-        parsed = mdResult;
-        console.log(`Markdown parse: ${parsed.item_count} products`);
-      } else {
-        console.warn("Markdown parse 0 products — preview:", markdown.slice(0, 200));
-      }
-    }
-
-    // ===== Step 3: Parse Firecrawl HTML =====
-    if (!parsed && html) {
-      const htmlResult = parseNfceHtml(html);
-      if (htmlResult.products.length > 0) {
-        parsed = htmlResult;
-        console.log(`HTML parse: ${parsed.item_count} products`);
-      } else {
-        console.warn("HTML parse 0 products — preview:", html.slice(0, 200));
-      }
-    }
-
-    // ===== Step 4: Native fetch fallback =====
-    if (!parsed) {
-      console.log("Trying native fetch...");
-      try {
-        const nativeRes = await fetchWithTimeout(
-          url,
-          {
-            headers: {
-              "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-              "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.5",
-              "Referer": "https://portalsped.fazenda.mg.gov.br/portalnfce/",
-            },
-            redirect: "follow",
-          },
-          12000
-        );
-
-        console.log(`Native fetch status: ${nativeRes.status}`);
-        if (!nativeRes.ok) {
-          if (nativeRes.status === 404) {
-            return new Response(
-              JSON.stringify({ error: "Cupom fiscal não encontrado" }),
-              { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-            );
-          }
-        } else {
-          const nativeHtml = await nativeRes.text();
-          console.log(`Native fetch: ${nativeHtml.length} chars — preview: ${nativeHtml.slice(0, 150)}`);
-          const nativeResult = parseNfceHtml(nativeHtml);
-          if (nativeResult.products.length > 0) {
-            parsed = nativeResult;
-            console.log(`Native HTML parse: ${parsed.item_count} products`);
-          } else {
-            console.warn("Native HTML parse 0 products");
-          }
-        }
-      } catch (fetchError) {
-        console.warn("Native fetch error:", fetchError instanceof Error ? fetchError.message : fetchError);
-      }
-    }
-
-    // ===== Final check =====
-    if (!parsed || parsed.products.length === 0) {
-      let detail: string;
-      let debugHint: string;
-
-      if (!markdown && !html) {
-        // Nothing was fetched at all
-        if (firecrawlStatus >= 400) {
-          detail = `Portal da SEFAZ inacessível (Firecrawl ${firecrawlStatus}). Tente novamente.`;
-          debugHint = `firecrawl_status=${firecrawlStatus} error=${firecrawlError.slice(0, 100)}`;
-        } else if (firecrawlError) {
-          detail = "Não foi possível acessar o portal da SEFAZ. Verifique sua conexão.";
-          debugHint = `firecrawl_error=${firecrawlError.slice(0, 100)}`;
-        } else {
-          detail = "O portal da SEFAZ não retornou dados. Tente novamente em instantes.";
-          debugHint = "all_empty";
-        }
-      } else {
-        // Content was fetched but products weren't found — structure mismatch
-        detail = "Não foi possível extrair os produtos. O portal pode ter alterado seu layout.";
-        debugHint = `markdown=${markdown.length}chars html=${html.length}chars preview=${(markdown || html).slice(0, 150).replace(/\s+/g, " ")}`;
-      }
-
-      console.error("No products. Debug:", debugHint);
+    if (!html) {
+      const detail =
+        lastStatus === 403
+          ? "Portal da SEFAZ bloqueou o acesso. Use a aba 'Digitar' para inserir a chave manualmente."
+          : lastStatus >= 500
+          ? "Portal da SEFAZ está fora do ar. Tente novamente em instantes."
+          : "Não foi possível acessar o portal da SEFAZ.";
       return new Response(
-        JSON.stringify({ error: detail, _debug: debugHint }),
-        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: detail, _debug: `fetch_status=${lastStatus}` }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    // Fill missing access key from URL or input
-    if (!parsed.access_key && accessKey) {
-      parsed.access_key = accessKey.replace(/\s/g, "");
+    // ── Parse ──
+    const parsed = parseNfceHtml(html);
+    console.log(
+      `Parsed: ${parsed.item_count} products, emitter="${parsed.emitter.name}", total=${parsed.total_amount}`,
+    );
+
+    if (parsed.products.length === 0) {
+      const preview = html.slice(0, 400).replace(/\s+/g, " ");
+      console.warn("Zero products. Preview:", preview);
+      return new Response(
+        JSON.stringify({
+          error:
+            "HTML obtido mas nenhum produto extraído. O layout do portal pode ter mudado.",
+          _debug: `html=${html.length}chars | preview=${preview}`,
+        }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
-    if (!parsed.access_key && url) {
-      const urlKeyMatch = url.match(/p=(\d{44})/);
-      if (urlKeyMatch) parsed.access_key = urlKeyMatch[1];
+
+    // Fill missing access_key
+    if (!parsed.access_key) {
+      const fromKey = accessKey.replace(/\s/g, "");
+      const fromUrl = url.match(/[?&](?:p|chaveNFe)=(\d{44})/)?.[1] ?? "";
+      parsed.access_key = fromKey || fromUrl;
     }
 
     return new Response(
       JSON.stringify({ ...parsed, qr_code_url: url }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
-  } catch (error) {
-    console.error("fetch-nfce unhandled error:", error);
+  } catch (err) {
+    console.error("Unhandled error:", err);
     return new Response(
-      JSON.stringify({ error: "Erro interno ao processar o cupom" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({ error: "Erro interno ao processar o cupom." }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });
