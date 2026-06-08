@@ -1,12 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { QrCode, Loader2, Camera, Keyboard } from "lucide-react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { QrCode, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { QRScannerCamera } from "@/components/scanner/QRScannerCamera";
-import { ManualInput } from "@/components/scanner/ManualInput";
 import { ReceiptPreview, type ParsedReceipt } from "@/components/scanner/ReceiptPreview";
 import { useAIProductIntelligence } from "@/hooks/useAIProductIntelligence";
 
@@ -76,10 +74,6 @@ export default function Scanner() {
         fetchReceipt(decodedText, "url");
       }
     }
-  };
-
-  const handleManualSubmit = (value: string, type: "url" | "access_key") => {
-    fetchReceipt(value, type);
   };
 
   const handleConfirmSave = async () => {
@@ -233,26 +227,9 @@ export default function Scanner() {
       )}
 
       {!loading && (
-        <Tabs defaultValue="camera" className="w-full max-w-md mx-auto">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="camera" className="gap-2">
-              <Camera className="h-4 w-4" />
-              Câmera
-            </TabsTrigger>
-            <TabsTrigger value="manual" className="gap-2">
-              <Keyboard className="h-4 w-4" />
-              Manual
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="camera" className="mt-6">
-            <QRScannerCamera onScan={handleQRScan} disabled={loading} />
-          </TabsContent>
-
-          <TabsContent value="manual" className="mt-6">
-            <ManualInput onSubmit={handleManualSubmit} disabled={loading} />
-          </TabsContent>
-        </Tabs>
+        <div className="w-full max-w-md mx-auto">
+          <QRScannerCamera onScan={handleQRScan} disabled={loading} />
+        </div>
       )}
 
       <ReceiptPreview
