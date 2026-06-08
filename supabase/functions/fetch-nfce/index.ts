@@ -510,13 +510,10 @@ Deno.serve(async (req) => {
     let html = "";
     let parsed: ParsedNfce | null = null;
 
-    // ===== Step 1: Firecrawl — BR location + html (follows JSF redirects, avoids SEFAZ geo-block) =====
-    let firecrawlStatus = 0;
-    let firecrawlError = "";
-    if (firecrawlApiKey) {
-      console.log("Trying Firecrawl (BR location, html+markdown)...");
+    // Helper: call Firecrawl and return { markdown, html, status, error }
+    async function callFirecrawl(opts: Record<string, unknown>) {
       try {
-        const fcRes = await fetchWithTimeout(
+        const res = await fetchWithTimeout(
           "https://api.firecrawl.dev/v1/scrape",
           {
             method: "POST",
@@ -524,62 +521,92 @@ Deno.serve(async (req) => {
               Authorization: `Bearer ${firecrawlApiKey}`,
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({
-              url,
-              formats: ["markdown", "html"],
-              waitFor: 5000,
-              timeout: 22000,
-              onlyMainContent: false,
-              // Use Brazilian IPs — SEFAZ MG blocks foreign datacenter ranges
-              location: { country: "BR", languages: ["pt-BR", "pt"] },
-              headers: {
-                "Accept-Language": "pt-BR,pt;q=0.9",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-              },
-            }),
+            body: JSON.stringify({ url, onlyMainContent: false, ...opts }),
           },
-          26000
+          (opts.timeout as number ?? 20000) + 4000 // outer AbortController slightly longer than inner
         );
-
-        firecrawlStatus = fcRes.status;
-        if (fcRes.ok) {
-          const fcData = await fcRes.json();
-          markdown = fcData.data?.markdown || fcData.markdown || "";
-          html = fcData.data?.html || fcData.html || "";
-          console.log(`Firecrawl OK (${fcRes.status}) — markdown: ${markdown.length} chars, html: ${html.length} chars`);
-          // Log first 300 chars to help debug parsing issues
-          if (markdown) console.log("Markdown preview:", markdown.slice(0, 300));
-          else if (html) console.log("HTML preview:", html.slice(0, 300));
-        } else {
-          const errBody = await fcRes.text().catch(() => "");
-          firecrawlError = errBody.slice(0, 300);
-          console.warn(`Firecrawl ${fcRes.status}:`, firecrawlError);
+        if (res.ok) {
+          const d = await res.json();
+          return {
+            status: res.status,
+            markdown: (d.data?.markdown || d.markdown || "") as string,
+            html: (d.data?.html || d.html || "") as string,
+            error: "",
+          };
         }
+        const errText = await res.text().catch(() => "");
+        return { status: res.status, markdown: "", html: "", error: errText.slice(0, 200) };
       } catch (e) {
-        firecrawlError = e instanceof Error ? e.message : String(e);
-        console.warn("Firecrawl error:", firecrawlError);
+        return { status: 0, markdown: "", html: "", error: e instanceof Error ? e.message : String(e) };
       }
     }
 
-    // ===== Step 2: Parse markdown =====
+    // ===== Step 1: Firecrawl attempt 1 — standard desktop scrape =====
+    let firecrawlStatus = 0;
+    let firecrawlError = "";
+    if (firecrawlApiKey) {
+      console.log("Firecrawl attempt 1 (desktop)...");
+      const fc1 = await callFirecrawl({
+        formats: ["markdown", "html"],
+        waitFor: 5000,
+        timeout: 20000,
+        headers: { "Accept-Language": "pt-BR,pt;q=0.9" },
+      });
+      firecrawlStatus = fc1.status;
+      firecrawlError = fc1.error;
+      markdown = fc1.markdown;
+      html = fc1.html;
+      console.log(`FC1 status=${fc1.status} md=${markdown.length} html=${html.length}`);
+      if (markdown) console.log("FC1 md preview:", markdown.slice(0, 200));
+      else if (html) console.log("FC1 html preview:", html.slice(0, 200));
+
+      // ===== Step 1b: Firecrawl attempt 2 — mobile mode (bypass some portal guards) =====
+      if (!markdown && !html && firecrawlApiKey) {
+        console.log("Firecrawl attempt 2 (mobile)...");
+        const fc2 = await callFirecrawl({
+          formats: ["markdown", "html"],
+          waitFor: 6000,
+          timeout: 18000,
+          mobile: true,
+          headers: {
+            "Accept-Language": "pt-BR,pt;q=0.9",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+          },
+        });
+        if (fc2.markdown || fc2.html) {
+          firecrawlStatus = fc2.status;
+          firecrawlError = fc2.error;
+          markdown = fc2.markdown;
+          html = fc2.html;
+          console.log(`FC2 status=${fc2.status} md=${markdown.length} html=${html.length}`);
+          if (markdown) console.log("FC2 md preview:", markdown.slice(0, 200));
+        } else {
+          console.warn(`FC2 also empty. status=${fc2.status} err=${fc2.error.slice(0, 100)}`);
+          if (!firecrawlError) firecrawlError = fc2.error;
+          if (!firecrawlStatus) firecrawlStatus = fc2.status;
+        }
+      }
+    }
+
+    // ===== Step 2: Parse Firecrawl markdown =====
     if (markdown) {
       const mdResult = parseNfceMarkdown(markdown);
       if (mdResult.products.length > 0) {
         parsed = mdResult;
         console.log(`Markdown parse: ${parsed.item_count} products`);
       } else {
-        console.warn("Markdown parse found 0 products");
+        console.warn("Markdown parse 0 products — preview:", markdown.slice(0, 200));
       }
     }
 
-    // ===== Step 3: Parse HTML (Firecrawl rendered) =====
+    // ===== Step 3: Parse Firecrawl HTML =====
     if (!parsed && html) {
       const htmlResult = parseNfceHtml(html);
       if (htmlResult.products.length > 0) {
         parsed = htmlResult;
-        console.log(`Firecrawl HTML parse: ${parsed.item_count} products`);
+        console.log(`HTML parse: ${parsed.item_count} products`);
       } else {
-        console.warn("Firecrawl HTML parse found 0 products");
+        console.warn("HTML parse 0 products — preview:", html.slice(0, 200));
       }
     }
 
@@ -591,15 +618,17 @@ Deno.serve(async (req) => {
           url,
           {
             headers: {
-              "User-Agent":
-                "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36",
-              Accept: "text/html,application/xhtml+xml",
+              "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.5",
+              "Referer": "https://portalsped.fazenda.mg.gov.br/portalnfce/",
             },
             redirect: "follow",
           },
           12000
         );
 
+        console.log(`Native fetch status: ${nativeRes.status}`);
         if (!nativeRes.ok) {
           if (nativeRes.status === 404) {
             return new Response(
@@ -607,16 +636,15 @@ Deno.serve(async (req) => {
               { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
           }
-          console.warn("Native fetch status:", nativeRes.status);
         } else {
           const nativeHtml = await nativeRes.text();
-          console.log(`Native fetch: ${nativeHtml.length} chars`);
+          console.log(`Native fetch: ${nativeHtml.length} chars — preview: ${nativeHtml.slice(0, 150)}`);
           const nativeResult = parseNfceHtml(nativeHtml);
           if (nativeResult.products.length > 0) {
             parsed = nativeResult;
             console.log(`Native HTML parse: ${parsed.item_count} products`);
           } else {
-            console.warn("Native HTML parse found 0 products");
+            console.warn("Native HTML parse 0 products");
           }
         }
       } catch (fetchError) {

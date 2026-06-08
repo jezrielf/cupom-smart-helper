@@ -35,6 +35,8 @@ export default function Scanner() {
 
       if (error) {
         const status = (error as any)?.status;
+        // Log debug info so we can diagnose 502 failures
+        if (data?._debug) console.warn("[fetch-nfce debug]", data._debug);
         if (status === 404) {
           toast.error("Cupom fiscal não encontrado");
         } else if (status === 422) {
